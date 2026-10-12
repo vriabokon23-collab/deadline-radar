@@ -136,6 +136,9 @@ ENV/
 env.bak/
 venv.bak/
 
+# Deadline Radar local database (CLAUDE.md: data/ stays out of version control)
+data/
+
 # Spyder project settings
 .spyderproject
 .spyproject
