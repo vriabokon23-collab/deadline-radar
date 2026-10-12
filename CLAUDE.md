@@ -25,9 +25,17 @@ sample_data/        Demo handbooks and seed data (no real personal data)
 
 ## Data model
 
-Table `assessments`: id, module_code, module_name, title, type (essay, exam, coursework, presentation, problem_set, group_project, other), due_date (ISO date), due_time (nullable), weighting_pct (nullable), word_count (nullable), estimated_hours, status (not_started, in_progress, submitted), progress_pct (0 to 100), source (extracted or manual), confidence (high, medium, low), source_quote (the handbook text the date came from), notes, created_at, updated_at.
+Table `assessments`: id, module_code, module_name, title, type (essay, exam, coursework, presentation, problem_set, group_project, other), due_date (ISO date), due_time (nullable), weighting_pct (nullable), word_count (nullable), estimated_hours, status (not_started, in_progress, submitted), progress_pct (0 to 100), source (extracted, manual or fixture), confidence (high, medium, low), source_quote (the handbook text the date came from), notes, created_at, updated_at.
 
 Table `progress_log`: id, assessment_id, logged_at, hours_spent, progress_pct_after, note.
+
+`source` records provenance and is never reassigned at save time:
+
+- `extracted` — Claude read the uploaded PDF and returned this row.
+- `manual` — the student typed it in, either on the Add form or as a new row in the review editor.
+- `fixture` — the app fabricated it via the offline fallback in `_generate_fixture_extractions`, because `ANTHROPIC_API_KEY` was missing, `DEADLINE_RADAR_FIXTURES=1` was set, or every API attempt failed. The dates, weightings and quotes are invented.
+
+`extracted` and `manual` are the only values a trustworthy row can have. Fixture rows must stay labelled all the way into the database so the dashboard can flag them; never relabel one as `extracted`. `source` is read-only in the review editor and is preserved by the edit form. SQLite enforces the enum, and machine sources (`extracted`, `fixture`) must carry a non-empty `source_quote`. Because the schema uses `CREATE TABLE IF NOT EXISTS`, widening this enum needs a table rebuild — see `_migrate_source_check` in `radar/db.py`.
 
 ## UCL 2026/27 calendar (hardcode in radar/calendar.py)
 
@@ -43,6 +51,7 @@ Handbooks refer to deadlines as "Week 7", "Term 1 Week 10", or by UCL timetable 
 - Every extracted assessment must carry a source_quote and a confidence level.
 - Extracted rows go to a review table first. Nothing is written to the database until the user clicks Confirm.
 - estimated_hours: Claude proposes a figure from type, weighting and word count; the user can override it.
+- The offline fixture fallback must never pass itself off as a real extraction. `ExtractionResult` stamps `source` on every row it carries, the review gate badges the queue, and Confirm persists that label verbatim.
 
 ## Core features (MVP, must work by Thursday night)
 
