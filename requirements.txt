@@ -1,0 +1,7 @@
+streamlit>=1.38,<2.0
+anthropic>=0.34,<1.0
+plotly>=5.24,<6.0
+icalendar>=6.0,<7.0
+python-dotenv>=1.0,<2.0
+pytest>=8.0,<9.0
+pandas>=2.0,<3.0
