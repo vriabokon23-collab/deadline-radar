@@ -7,6 +7,7 @@ Surfaces crunch weeks, tracks progress, and flags assessments at risk of slippin
 from __future__ import annotations
 
 import base64
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 import json
 import os
@@ -318,7 +319,20 @@ def seed_demo_data(conn: sqlite3.Connection) -> int:
 # ---------------------------------------------------------------------------
 # Claude PDF Extraction & Fixture Fallback
 # ---------------------------------------------------------------------------
-def extract_from_pdf(file_bytes: bytes, filename: str) -> list[dict[str, Any]]:
+@dataclass
+class ExtractionResult:
+    """Outcome of one handbook extraction, including how the rows were produced."""
+
+    assessments: list[dict[str, Any]]
+    source: str  # "api" or "fixture"
+    reason: str | None = None
+
+    @property
+    def used_fixtures(self) -> bool:
+        return self.source == "fixture"
+
+
+def extract_from_pdf(file_bytes: bytes, filename: str) -> ExtractionResult:
     """Extract assessments from PDF using Anthropic API or realistic offline fixtures.
 
     Adheres to CLAUDE.md:
@@ -326,14 +340,21 @@ def extract_from_pdf(file_bytes: bytes, filename: str) -> list[dict[str, Any]]:
     - Proposes estimated_hours
     - Requires source_quote and confidence
     - Replays fixtures if offline / DEADLINE_RADAR_FIXTURES=1
+
+    Never renders Streamlit output: fixture fallbacks are reported through the
+    returned result so the caller can surface them after a rerun.
     """
     api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
     fixtures_mode = os.environ.get("DEADLINE_RADAR_FIXTURES", "0").strip() == "1"
 
     # If no key or fixtures mode requested, return high-fidelity synthetic extraction
     if not api_key or fixtures_mode:
-        st.info("ℹ️ Using offline extraction fixture mode for demonstration.")
-        return _generate_fixture_extractions(filename)
+        reason = (
+            "DEADLINE_RADAR_FIXTURES=1 forces offline fixture mode"
+            if fixtures_mode
+            else "ANTHROPIC_API_KEY is not set, so Claude was never called"
+        )
+        return ExtractionResult(_generate_fixture_extractions(filename), "fixture", reason)
 
     import anthropic
     client = anthropic.Anthropic(api_key=api_key)
@@ -392,14 +413,17 @@ def extract_from_pdf(file_bytes: bytes, filename: str) -> list[dict[str, Any]]:
                         text = text[4:].strip()
                 data = json.loads(text)
                 if isinstance(data, list):
-                    return _normalize_extracted_batch(data)
+                    return ExtractionResult(_normalize_extracted_batch(data), "api")
             except Exception as err:
                 last_err = err
                 if attempt == 2:
                     break
 
-    st.warning(f"Live API call encountered an issue ({last_err}). Falling back to fixture replay for {filename}.")
-    return _generate_fixture_extractions(filename)
+    return ExtractionResult(
+        _generate_fixture_extractions(filename),
+        "fixture",
+        f"every Claude API attempt failed ({last_err})",
+    )
 
 
 def _normalize_extracted_batch(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -830,12 +854,28 @@ def render_workload_heatmap(conn: sqlite3.Connection, today: date) -> None:
 # ---------------------------------------------------------------------------
 # UI View 3: PDF Upload & Editable Review Table (The Review Gate)
 # ---------------------------------------------------------------------------
+def _queue_extraction_notice(level: str, message: str) -> None:
+    """Hold a notice in session state so it survives the st.rerun() that follows."""
+    st.session_state.setdefault("extraction_notices", []).append((level, message))
+
+
+def _drain_extraction_notices() -> None:
+    """Render notices queued before the last rerun, then clear them."""
+    notices = st.session_state.pop("extraction_notices", [])
+    for level, message in notices:
+        getattr(st, level)(message)
+
+
 def render_upload_and_review(conn: sqlite3.Connection) -> None:
     st.header("📄 Handbook PDF Extraction & Review")
     st.caption("Extract deadlines from module handbooks. Confirm or edit rows before committing to the database.")
 
     if "review_queue" not in st.session_state:
         st.session_state.review_queue = []
+    if "review_fixture_files" not in st.session_state:
+        st.session_state.review_fixture_files = []
+
+    _drain_extraction_notices()
 
     # File Uploader
     uploaded_files = st.file_uploader(
@@ -852,15 +892,26 @@ def render_upload_and_review(conn: sqlite3.Connection) -> None:
                 for uploaded in uploaded_files:
                     try:
                         content = uploaded.read()
-                        results = extract_from_pdf(content, uploaded.name)
-                        extracted_items.extend(results)
+                        result = extract_from_pdf(content, uploaded.name)
+                        if result.used_fixtures:
+                            st.session_state.review_fixture_files.append(uploaded.name)
+                            _queue_extraction_notice(
+                                "warning",
+                                f"⚠️ **{uploaded.name}: these rows are fabricated demo fixtures, "
+                                f"not a real extraction.** Claude did not read this PDF — "
+                                f"{result.reason}. Do not trust these dates.",
+                            )
+                        extracted_items.extend(result.assessments)
                     except Exception as exc:
-                        st.error(f"Failed to extract {uploaded.name}: {exc}")
+                        _queue_extraction_notice("error", f"Failed to extract {uploaded.name}: {exc}")
 
             if extracted_items:
                 st.session_state.review_queue.extend(extracted_items)
-                st.success(f"Extracted {len(extracted_items)} candidate assessments! Review them below.")
-                st.rerun()
+                _queue_extraction_notice(
+                    "success",
+                    f"Extracted {len(extracted_items)} candidate assessments! Review them below.",
+                )
+            st.rerun()
 
     st.divider()
 
@@ -872,6 +923,16 @@ def render_upload_and_review(conn: sqlite3.Connection) -> None:
 
     st.subheader(f"Editable Review Gate ({len(queue)} candidate assessments)")
     st.warning("⚠️ **Nothing is saved to the database until you click 'Confirm & Save' below.**")
+
+    # Persistent provenance badge: the banner above is one-shot, the queue is not.
+    fixture_files = st.session_state.review_fixture_files
+    if fixture_files:
+        st.error(
+            "🧪 **FIXTURE DATA IN THIS QUEUE — NOT EXTRACTED FROM YOUR PDFs.** "
+            f"Rows sourced from fixture replay for: {', '.join(fixture_files)}. "
+            "Every date, weighting and quote below is invented. Discard the queue and fix "
+            "`ANTHROPIC_API_KEY` before relying on any of it."
+        )
 
     # High / Low confidence summary
     low_conf_count = sum(1 for r in queue if r.get("confidence") == "low")
@@ -998,13 +1059,18 @@ def render_upload_and_review(conn: sqlite3.Connection) -> None:
             elif to_save:
                 inserted_ids = db.insert_assessments(conn, to_save)
                 st.session_state.review_queue = []
-                st.success(f"Successfully saved {len(inserted_ids)} assessment(s) to Deadline Radar!")
+                st.session_state.review_fixture_files = []
+                _queue_extraction_notice(
+                    "success",
+                    f"Successfully saved {len(inserted_ids)} assessment(s) to Deadline Radar!",
+                )
                 st.rerun()
 
     with c_btn2:
         if st.button("🗑️ Discard Review Queue"):
             st.session_state.review_queue = []
-            st.info("Discarded review queue.")
+            st.session_state.review_fixture_files = []
+            _queue_extraction_notice("info", "Discarded review queue.")
             st.rerun()
 
 

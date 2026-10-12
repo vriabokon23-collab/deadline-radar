@@ -139,7 +139,8 @@ def test_calendar_export(memory_db):
 
 def test_offline_extraction_fixture():
     """Verify handbook PDF offline extraction returns structured candidates."""
-    res = app.extract_from_pdf(b"%PDF-1.4 test", "COMP0004_Algorithms.pdf")
+    result = app.extract_from_pdf(b"%PDF-1.4 test", "COMP0004_Algorithms.pdf")
+    res = result.assessments
     assert len(res) == 2
     assert res[0]["module_code"] == "COMP0004"
     assert res[0]["confidence"] in app.CONFIDENCES
@@ -147,6 +148,22 @@ def test_offline_extraction_fixture():
 
     # Second item should be low confidence due to ambiguous week reference
     assert res[1]["confidence"] == "low"
+
+
+def test_extraction_result_reports_fixture_fallback(monkeypatch):
+    """Fixture replay must be reported to the caller, not silently returned."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("DEADLINE_RADAR_FIXTURES", raising=False)
+
+    result = app.extract_from_pdf(b"%PDF-1.4 test", "COMP0004_Algorithms.pdf")
+    assert result.used_fixtures is True
+    assert result.source == "fixture"
+    assert "ANTHROPIC_API_KEY" in result.reason
+
+    monkeypatch.setenv("DEADLINE_RADAR_FIXTURES", "1")
+    forced = app.extract_from_pdf(b"%PDF-1.4 test", "COMP0004_Algorithms.pdf")
+    assert forced.used_fixtures is True
+    assert "DEADLINE_RADAR_FIXTURES" in forced.reason
 
 
 def test_normalize_extracted_batch():
@@ -268,9 +285,46 @@ def test_streamlit_app_navigation_and_rendering(tmp_path):
     assert not at.exception
 
 
+def test_fixture_fallback_notice_survives_rerun(tmp_path, monkeypatch):
+    """Uploading with no API key must visibly warn that the rows are fabricated.
+
+    Regression: the notice was rendered in the same pass as st.rerun(), which
+    discards it, so a misconfigured demo showed invented deadlines silently.
+    """
+    from streamlit.testing.v1 import AppTest
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    db_file = tmp_path / "test_radar.db"
+    app.db.connect(db_file).close()
+
+    at = AppTest.from_file(str(_CURRENT_DIR / "app.py"), default_timeout=30)
+    at.session_state["db_path"] = str(db_file)
+    at.run()
+    at.sidebar.radio(key="main_nav_radio").set_value("📄 Upload & Review").run()
+    assert not at.exception
+
+    at.file_uploader[0].set_value(("COMP0004_Algorithms.pdf", b"%PDF-1.4 fake", "application/pdf"))
+    at.run()
+    extract_btn = next(b for b in at.button if "Extract Assessments" in b.label)
+    extract_btn.click().run()
+    assert not at.exception
+
+    # Rows reached the review gate...
+    assert len(at.session_state["review_queue"]) == 2
+    # ...and the fabrication notice is actually on screen alongside them.
+    assert any("fabricated" in w.value for w in at.warning)
+    assert any("Extracted 2 candidate assessments" in s.value for s in at.success)
+    assert any("FIXTURE DATA IN THIS QUEUE" in e.value for e in at.error)
+
+    # One-shot banners drain; the queue badge persists while the rows do.
+    at.run()
+    assert not any("fabricated" in w.value for w in at.warning)
+    assert any("FIXTURE DATA IN THIS QUEUE" in e.value for e in at.error)
+
+
 def test_review_confirmation_pipeline(memory_db):
     """Test extracting handbooks into review queue and confirming to DB."""
-    candidates = app.extract_from_pdf(b"%PDF-1.4 sample", "COMP0002_Software_Engineering.pdf")
+    candidates = app.extract_from_pdf(b"%PDF-1.4 sample", "COMP0002_Software_Engineering.pdf").assessments
     assert len(candidates) >= 2
 
     # Verify review gate holds: nothing in database yet
