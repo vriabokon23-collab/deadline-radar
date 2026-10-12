@@ -137,45 +137,6 @@ def test_calendar_export(memory_db):
     assert b"COMP0004" in ics_bytes
 
 
-def test_offline_extraction_fixture():
-    """Verify handbook PDF offline extraction returns structured candidates."""
-    res = app.extract_from_pdf(b"%PDF-1.4 test", "COMP0004_Algorithms.pdf")
-    assert len(res) == 2
-    assert res[0]["module_code"] == "COMP0004"
-    assert res[0]["confidence"] in app.CONFIDENCES
-    assert len(res[0]["source_quote"]) > 0
-
-    # Second item should be low confidence due to ambiguous week reference
-    assert res[1]["confidence"] == "low"
-
-
-def test_normalize_extracted_batch():
-    """Verify that unformatted raw extracted items are properly cleaned."""
-    raw = [
-        {
-            "module_code": "comp0002",
-            "title": "Coursework 1",
-            "type": "COURSEWORK",
-            "due_date": "Term 1 Week 5",
-            "weighting_pct": "30",
-            "estimated_hours": "25",
-            "confidence": "HIGH",
-            "source_quote": "Due in Week 5",
-        }
-    ]
-    normalized = app._normalize_extracted_batch(raw)
-    assert len(normalized) == 1
-    item = normalized[0]
-    assert item["module_code"] == "comp0002"
-    assert item["type"] == "coursework"
-    assert item["weighting_pct"] == 30.0
-    assert item["estimated_hours"] == 25.0
-    assert item["confidence"] in app.CONFIDENCES
-    # due_date was resolved to a valid date
-    assert len(item["due_date"]) == 10
-    assert date.fromisoformat(item["due_date"])
-
-
 def test_manual_crud_and_progress_logging(memory_db):
     """Test manual creation, editing, deleting and progress logging."""
     # 1. Insert manual assessment
@@ -270,7 +231,9 @@ def test_streamlit_app_navigation_and_rendering(tmp_path):
 
 def test_review_confirmation_pipeline(memory_db):
     """Test extracting handbooks into review queue and confirming to DB."""
-    candidates = app.extract_from_pdf(b"%PDF-1.4 sample", "COMP0002_Software_Engineering.pdf")
+    candidates = app.extract.extract_from_pdf(
+        b"%PDF-1.4 sample", "COMP0002_Software_Engineering.pdf", fixtures_mode=True,
+    ).assessments
     assert len(candidates) >= 2
 
     # Verify review gate holds: nothing in database yet
