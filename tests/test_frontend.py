@@ -137,6 +137,71 @@ def test_calendar_export(memory_db):
     assert b"COMP0004" in ics_bytes
 
 
+def fixture_row(**overrides):
+    """A fabricated row shaped like one _generate_fixture_extractions produces."""
+    row = {
+        "module_code": "COMP9999",
+        "module_name": "Invented Module",
+        "title": "Fabricated Coursework",
+        "type": "coursework",
+        "due_date": "2026-12-07",  # T1 week 11
+        "estimated_hours": 40.0,
+        "source": "fixture",
+        "confidence": "low",
+        "source_quote": "Invented quote; Claude never read a handbook for this.",
+    }
+    row.update(overrides)
+    return row
+
+
+def test_fixture_rows_excluded_from_calendar_export(memory_db):
+    """A fabricated deadline must never reach the student's real calendar."""
+    app.seed_demo_data(memory_db)
+    app.db.insert_assessment(memory_db, fixture_row())
+    rows = app.db.list_assessments(memory_db)
+
+    exportable, fabricated = app.export.split_fabricated(rows)
+    assert len(fabricated) == 1
+    assert len(exportable) == len(rows) - 1
+
+    ics_bytes = app.export.export_calendar(exportable)
+    assert b"COMP0002" in ics_bytes
+    assert b"COMP9999" not in ics_bytes
+    assert b"Fabricated Coursework" not in ics_bytes
+
+    # Same outcome when a caller forgets to filter first.
+    assert b"COMP9999" not in app.export.export_calendar(rows)
+
+
+def test_export_split_without_fixture_rows_keeps_everything(memory_db):
+    app.seed_demo_data(memory_db)
+    rows = app.db.list_assessments(memory_db)
+    exportable, fabricated = app.export.split_fabricated(rows)
+    assert fabricated == []
+    assert len(exportable) == len(rows)
+
+
+def test_heatmap_separates_fabricated_hours(memory_db):
+    """The heatmap keeps fabricated hours in the totals but reports them apart."""
+    app.db.insert_assessment(memory_db, fixture_row(estimated_hours=40.0))
+    app.db.insert_assessment(memory_db, fixture_row(
+        module_code="COMP0002", title="Real Coursework", source="extracted",
+        estimated_hours=10.0, source_quote="Submit by 7 December 2026.",
+    ))
+    rows = [app.to_analytics_row(r) for r in app.db.list_assessments(memory_db)]
+    loads = app.analytics.weekly_workload(rows, app.get_all_term_weeks())
+
+    week11 = next(l for l in loads if l.week.term == "T1" and l.week.week_number == 11)
+    assert week11.remaining_hours == pytest.approx(50.0)
+    assert week11.fabricated_hours == pytest.approx(40.0)
+    assert week11.fabricated_count == 1
+
+    # Without the fabricated hours this week would fall under the 20h crunch line.
+    assert week11.remaining_hours >= 20.0
+    assert week11.remaining_hours - week11.fabricated_hours < 20.0
+    assert sum(l.fabricated_hours for l in loads) == pytest.approx(40.0)
+
+
 def test_offline_extraction_fixture():
     """Verify handbook PDF offline extraction returns structured candidates."""
     result = app.extract_from_pdf(b"%PDF-1.4 test", "COMP0004_Algorithms.pdf")

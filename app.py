@@ -640,10 +640,23 @@ def render_dashboard(conn: sqlite3.Connection, today: date) -> None:
             "**Manage Assessments** once `ANTHROPIC_API_KEY` is configured."
         )
 
+    # Risk is scored the same way whatever a row's provenance, so say when a flag
+    # rests on invented estimated_hours rather than hiding the row from the count.
+    fixture_at_risk = sum(
+        1 for item in enriched
+        if item["raw"].get("source") == "fixture"
+        and item["risk"].at_risk
+        and item["raw"]["status"] != "submitted"
+    )
+    risk_help = (
+        f"{fixture_at_risk} of these flag(s) belong to fabricated fixture rows, scored "
+        "from invented hours and dates." if fixture_at_risk else None
+    )
+
     # Top KPI Metrics Cards
     m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("Total Tracked", f"{total_count} items")
-    m2.metric("At Risk ⚠️", f"{at_risk_count} items", delta=-at_risk_count if at_risk_count else None, delta_color="inverse")
+    m2.metric("At Risk ⚠️", f"{at_risk_count} items", delta=-at_risk_count if at_risk_count else None, delta_color="inverse", help=risk_help)
     m3.metric("Due in 14 Days", f"{next_14_days_count} items")
     m4.metric("Overdue 🚨", f"{overdue_count} items")
     m5.metric("Submitted ✅", f"{submitted_count} items")
@@ -779,6 +792,16 @@ def render_workload_heatmap(conn: sqlite3.Connection, today: date) -> None:
     analytics_rows = [to_analytics_row(a) for a in assessments]
     loads = analytics.weekly_workload(analytics_rows, term_weeks)
 
+    # Fabricated hours stay in the totals but must not pass for real crunch.
+    fabricated_total = sum(l.fabricated_hours for l in loads)
+    if fabricated_total > 0:
+        st.warning(
+            f"🧪 **{fabricated_total:.1f}h of the workload below is fabricated fixture "
+            "data**, not estimated from any handbook Claude read. Hatched bars contain "
+            "invented hours, and hovering a bar breaks down how many. Delete those rows "
+            "under **Manage Assessments** for a true picture."
+        )
+
     # Term selection filter
     t_tab_all, t_tab_1, t_tab_2, t_tab_3 = st.tabs(["Full Academic Year", "Term 1", "Term 2", "Term 3"])
 
@@ -786,6 +809,7 @@ def render_workload_heatmap(conn: sqlite3.Connection, today: date) -> None:
         x_labels = []
         y_hours = []
         colors = []
+        patterns = []
         hover_texts = []
 
         for item in filtered_loads:
@@ -793,8 +817,11 @@ def render_workload_heatmap(conn: sqlite3.Connection, today: date) -> None:
             label = f"{w.term} W{w.week_number}<br>{w.start_date.strftime('%d %b')}"
             if w.is_reading_week:
                 label += "<br>*(Reading)*"
+            if item.fabricated_hours > 0:
+                label += "<br>🧪"
             x_labels.append(label)
             y_hours.append(item.remaining_hours)
+            patterns.append("/" if item.fabricated_hours > 0 else "")
 
             # Color classification
             if w.is_reading_week:
@@ -810,19 +837,29 @@ def render_workload_heatmap(conn: sqlite3.Connection, today: date) -> None:
             colors.append(c)
 
             rw_str = " (Reading Week)" if w.is_reading_week else ""
-            hover_texts.append(
+            hover = (
                 f"<b>{w.term} Week {w.week_number}{rw_str}</b><br>"
                 f"Commencing: {w.start_date.strftime('%A, %d %B %Y')}<br>"
                 f"Remaining Work: <b>{item.remaining_hours:.1f} hours</b><br>"
                 f"Deadlines Due: <b>{item.assessment_count}</b>"
             )
+            if item.fabricated_hours > 0:
+                hover += (
+                    f"<br>🧪 Fabricated: <b>{item.fabricated_hours:.1f} hours</b> "
+                    f"across <b>{item.fabricated_count}</b> fixture row(s)"
+                )
+            hover_texts.append(hover)
 
         fig = go.Figure(
             data=[
                 go.Bar(
                     x=x_labels,
                     y=y_hours,
-                    marker=dict(color=colors, line=dict(color="#333333", width=1)),
+                    marker=dict(
+                        color=colors,
+                        pattern=dict(shape=patterns, solidity=0.35),
+                        line=dict(color="#333333", width=1),
+                    ),
                     hovertext=hover_texts,
                     hoverinfo="text",
                 )
@@ -870,10 +907,20 @@ def render_workload_heatmap(conn: sqlite3.Connection, today: date) -> None:
         st.subheader("🚨 Identified Crunch Weeks")
         for cw in crunch_weeks:
             w = cw.week
-            st.error(
+            message = (
                 f"**{w.term} Week {w.week_number}** (Commencing {w.start_date.strftime('%d %B %Y')}): "
                 f"**{cw.remaining_hours:.1f} remaining hours** across **{cw.assessment_count} deadlines**."
             )
+            if cw.fabricated_hours > 0:
+                genuine_hours = cw.remaining_hours - cw.fabricated_hours
+                message += (
+                    f" 🧪 Includes **{cw.fabricated_hours:.1f}h of fabricated fixture "
+                    f"data** — only {genuine_hours:.1f}h of this crunch is real"
+                )
+                if genuine_hours < 20.0:
+                    message += ", which would not be a crunch week on its own"
+                message += "."
+            st.error(message)
     else:
         st.success("✅ No extreme crunch weeks (>20h) detected with current progress levels.")
 
@@ -1451,18 +1498,33 @@ def main() -> None:
     st.sidebar.subheader("🛠️ Quick Actions")
     assessments = db.list_assessments(conn)
 
-    if assessments:
+    exportable, fabricated = export.split_fabricated(assessments)
+
+    if exportable:
         try:
-            ics_bytes = export.export_calendar(assessments)
+            ics_bytes = export.export_calendar(exportable)
             st.sidebar.download_button(
                 label="📥 Export Calendar (.ics)",
                 data=ics_bytes,
                 file_name="deadline-radar.ics",
                 mime="text/calendar",
-                help="Export all assessments to Google Calendar, Apple Calendar, or Outlook.",
+                help="Export real deadlines to Google Calendar, Apple Calendar, or "
+                     "Outlook. Fabricated fixture rows are never exported.",
             )
         except Exception as exc:
             st.sidebar.caption(f"ICS Export unavailable: {exc}")
+        if fabricated:
+            st.sidebar.warning(
+                f"🧪 The .ics holds {len(exportable)} real deadline(s) and leaves out "
+                f"{len(fabricated)} fabricated fixture row(s). An imported calendar "
+                "event cannot be recalled, so invented dates stay inside the app."
+            )
+    elif fabricated:
+        st.sidebar.warning(
+            f"🧪 Nothing to export: all {len(fabricated)} tracked assessment(s) are "
+            "fabricated fixture data, which never goes into your calendar. Configure "
+            "`ANTHROPIC_API_KEY`, re-extract your handbooks, then export."
+        )
 
     if st.sidebar.button("🌱 Load Demo UCL Data", key="side_seed"):
         count = seed_demo_data(conn)

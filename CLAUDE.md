@@ -35,7 +35,13 @@ Table `progress_log`: id, assessment_id, logged_at, hours_spent, progress_pct_af
 - `manual` — the student typed it in, either on the Add form or as a new row in the review editor.
 - `fixture` — the app fabricated it via the offline fallback in `_generate_fixture_extractions`, because `ANTHROPIC_API_KEY` was missing, `DEADLINE_RADAR_FIXTURES=1` was set, or every API attempt failed. The dates, weightings and quotes are invented.
 
-`extracted` and `manual` are the only values a trustworthy row can have. Fixture rows must stay labelled all the way into the database so the dashboard can flag them; never relabel one as `extracted`. `source` is read-only in the review editor and is preserved by the edit form. SQLite enforces the enum, and machine sources (`extracted`, `fixture`) must carry a non-empty `source_quote`. Because the schema uses `CREATE TABLE IF NOT EXISTS`, widening this enum needs a table rebuild — see `_migrate_source_check` in `radar/db.py`.
+`extracted` and `manual` are the only values a trustworthy row can have. Fixture rows must stay labelled all the way into the database so the dashboard can flag them; never relabel one as `extracted`. `source` is read-only in the review editor and is preserved by the edit form. SQLite enforces the enum, and machine sources (`extracted`, `fixture`) must carry a non-empty `source_quote`. Because the schema uses `CREATE TABLE IF NOT EXISTS`, widening this enum needs a table rebuild — see `_migrate_source_check` in `radar/db.py`. `db.FABRICATED_SOURCE` holds the `fixture` string for the `radar/` modules that branch on provenance.
+
+Every consumer of a fixture row must either exclude it or say what it is:
+
+- **.ics export excludes them.** `export_calendar` drops them and `split_fabricated` (both in `radar/export.py`) gives the UI the counts. Importing an .ics is a one-way copy: the event outlives the row it came from, keeps firing reminders, and sits in a calendar this app can never reach, so a marker in the SUMMARY is not enough. The sidebar always reports how many rows were left out, and offers no download at all when every row is fabricated — an export must never be quietly empty.
+- **The workload heatmap includes their hours but breaks them out.** `WeekLoad.fabricated_hours` and `fabricated_count` are a breakdown of the totals, not a deduction; bars containing invented hours are hatched and labelled 🧪, the hover shows the split, and a crunch week says how much of itself is real. Omitting them would make demo mode look broken and hide hours the student can see on the dashboard anyway.
+- **Risk scoring ignores provenance.** The rule is about progress and time, and each card already carries a `🧪 FIXTURE` badge beside its risk banner, so a fixture row is scored like any other; the dashboard's At Risk metric notes how many flags rest on invented figures.
 
 ## UCL 2026/27 calendar (hardcode in radar/calendar.py)
 
@@ -59,9 +65,9 @@ Handbooks refer to deadlines as "Week 7", "Term 1 Week 10", or by UCL timetable 
 2. Add, edit and delete assessments manually.
 3. Dashboard: upcoming deadlines sorted by date, days remaining, progress bar per assessment.
 4. Progress logging: update progress_pct and hours spent; history stored in progress_log.
-5. Workload heatmap: remaining estimated hours bucketed by week across the term, with reading weeks marked.
+5. Workload heatmap: remaining estimated hours bucketed by week across the term, with reading weeks marked and fabricated fixture hours hatched and broken out.
 6. Risk flag: an assessment is at risk when actual progress trails expected progress (linear from a suggested start date to the due date) by more than 20 percentage points, or when remaining hours exceed available weeks at 10 hours per week per assessment.
-7. Export all deadlines as a .ics file.
+7. Export all genuine deadlines as a .ics file; fabricated fixture rows are excluded and the sidebar says how many.
 
 ## Stretch (only after MVP is stable)
 

@@ -18,6 +18,7 @@ ASSESSMENT_TYPES = ('essay', 'exam', 'coursework', 'presentation', 'problem_set'
 STATUSES = ('not_started', 'in_progress', 'submitted')
 SOURCES = ('extracted', 'manual', 'fixture')
 MACHINE_SOURCES = ('extracted', 'fixture')
+FABRICATED_SOURCE = 'fixture'
 CONFIDENCES = ('high', 'medium', 'low')
 FIELDS = frozenset(('module_code', 'module_name', 'title', 'type', 'due_date',
                     'due_time', 'weighting_pct', 'word_count', 'estimated_hours',

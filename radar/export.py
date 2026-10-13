@@ -7,7 +7,26 @@ from zoneinfo import ZoneInfo
 
 from icalendar import Calendar, Event, Timezone
 
+from radar.db import FABRICATED_SOURCE
+
 LONDON = ZoneInfo('Europe/London')
+
+
+def split_fabricated(
+    assessments: Iterable[Mapping[str, Any]],
+) -> tuple[list[Mapping[str, Any]], list[Mapping[str, Any]]]:
+    """Partition rows into (genuine, fabricated) on the `source` column.
+
+    Rows with no `source` at all count as genuine, matching the review editor's
+    treatment of hand-typed rows. Callers use the fabricated list to tell the
+    student what the export left out.
+    """
+    genuine: list[Mapping[str, Any]] = []
+    fabricated: list[Mapping[str, Any]] = []
+    for row in assessments:
+        bucket = fabricated if row.get('source') == FABRICATED_SOURCE else genuine
+        bucket.append(row)
+    return genuine, fabricated
 
 
 def _timestamp(value: str | datetime | None, fallback: datetime) -> datetime:
@@ -39,7 +58,12 @@ def export_calendar(assessments: Iterable[Mapping[str, Any]]) -> bytes:
     All-day deadlines span their due date only. Timed deadlines are instantaneous
     events in Europe/London, with timezone definitions embedded for importers.
     No status is inferred from progress; submitted assessments are included.
+
+    Fabricated fixture rows are dropped rather than labelled: importing an .ics is
+    a one-way copy, so an invented deadline would outlive the row it came from and
+    keep firing reminders in a calendar this app can no longer reach.
     """
+    assessments, _ = split_fabricated(assessments)
     calendar = Calendar()
     calendar.add('prodid', '-//Deadline Radar//UCL Assessment Deadlines//EN')
     calendar.add('version', '2.0')
