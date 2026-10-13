@@ -40,10 +40,11 @@ combine them with unrelated pending SQL. Set `status` explicitly: reaching 100%
 progress does not automatically mean submitted.
 
 The exporter returns `.ics` bytes for a download named `deadline-radar.ics`.
-It includes submitted work, stable IDs, source quotes and context. Null due times
-produce all-day events; local times produce Europe/London deadlines with embedded
-timezone definitions. Missing or ambiguous times at daylight-saving transitions
-raise an error so the deadline can be clarified.
+It includes submitted work, stable IDs, source quotes and context, but never
+fabricated fixture rows — use `split_fabricated` to report what was left out.
+Null due times produce all-day events; local times produce Europe/London
+deadlines with embedded timezone definitions. Missing or ambiguous times at
+daylight-saving transitions raise an error so the deadline can be clarified.
 
 ### Week references
 

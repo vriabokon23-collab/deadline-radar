@@ -16,15 +16,17 @@ DEFAULT_DB_PATH = Path(__file__).resolve().parents[1] / 'data' / 'radar.db'
 ASSESSMENT_TYPES = ('essay', 'exam', 'coursework', 'presentation', 'problem_set',
                     'group_project', 'other')
 STATUSES = ('not_started', 'in_progress', 'submitted')
-SOURCES = ('extracted', 'manual')
+SOURCES = ('extracted', 'manual', 'fixture')
+MACHINE_SOURCES = ('extracted', 'fixture')
+FABRICATED_SOURCE = 'fixture'
 CONFIDENCES = ('high', 'medium', 'low')
 FIELDS = frozenset(('module_code', 'module_name', 'title', 'type', 'due_date',
                     'due_time', 'weighting_pct', 'word_count', 'estimated_hours',
                     'status', 'progress_pct', 'source', 'confidence',
                     'source_quote', 'notes'))
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS assessments (
+# Shared by SCHEMA and _migrate_source_check so the rebuilt table cannot drift.
+ASSESSMENTS_COLUMNS = """
     id INTEGER PRIMARY KEY,
     module_code TEXT NOT NULL CHECK(length(trim(module_code)) > 0),
     module_name TEXT NOT NULL DEFAULT '',
@@ -40,14 +42,18 @@ CREATE TABLE IF NOT EXISTS assessments (
     status TEXT NOT NULL DEFAULT 'not_started'
         CHECK(status IN ('not_started','in_progress','submitted')),
     progress_pct REAL NOT NULL DEFAULT 0 CHECK(progress_pct BETWEEN 0 AND 100),
-    source TEXT NOT NULL DEFAULT 'manual' CHECK(source IN ('extracted','manual')),
+    source TEXT NOT NULL DEFAULT 'manual'
+        CHECK(source IN ('extracted','manual','fixture')),
     confidence TEXT NOT NULL DEFAULT 'high' CHECK(confidence IN ('high','medium','low')),
     source_quote TEXT NOT NULL DEFAULT '',
     notes TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    CHECK(source != 'extracted' OR length(trim(source_quote)) > 0)
-);
+    CHECK(source NOT IN ('extracted','fixture') OR length(trim(source_quote)) > 0)
+"""
+
+SCHEMA = f"""
+CREATE TABLE IF NOT EXISTS assessments ({ASSESSMENTS_COLUMNS});
 CREATE TABLE IF NOT EXISTS progress_log (
     id INTEGER PRIMARY KEY,
     assessment_id INTEGER NOT NULL REFERENCES assessments(id) ON DELETE CASCADE,
@@ -65,6 +71,45 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec='microseconds')
 
 
+_MIGRATED_COLUMNS = ('id', 'module_code', 'module_name', 'title', 'type', 'due_date',
+                     'due_time', 'weighting_pct', 'word_count', 'estimated_hours',
+                     'status', 'progress_pct', 'source', 'confidence', 'source_quote',
+                     'notes', 'created_at', 'updated_at')
+
+
+def _migrate_source_check(conn: sqlite3.Connection) -> bool:
+    """Widen a pre-existing table's source CHECK to admit 'fixture'.
+
+    Databases created before fixture provenance existed carry the old two-value
+    CHECK, and ``CREATE TABLE IF NOT EXISTS`` never revisits it. SQLite cannot
+    ALTER a CHECK, so rebuild the table; otherwise saving a fixture row fails
+    with an IntegrityError instead of being labelled.
+    """
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'assessments'"
+    ).fetchone()
+    if row is None or "'fixture'" in row[0]:
+        return False
+
+    # Dropping assessments would cascade into progress_log while FKs are on.
+    conn.execute('PRAGMA foreign_keys = OFF')
+    try:
+        columns = ', '.join(_MIGRATED_COLUMNS)
+        with conn:
+            conn.execute(f'CREATE TABLE assessments_migrated ({ASSESSMENTS_COLUMNS})')
+            conn.execute(f'INSERT INTO assessments_migrated ({columns}) '
+                         f'SELECT {columns} FROM assessments')
+            conn.execute('DROP TABLE assessments')
+            conn.execute('ALTER TABLE assessments_migrated RENAME TO assessments')
+            conn.execute('CREATE INDEX IF NOT EXISTS assessments_due_date '
+                         'ON assessments(due_date, id)')
+        if conn.execute('PRAGMA foreign_key_check').fetchone() is not None:
+            raise sqlite3.IntegrityError('source CHECK migration broke referential integrity')
+    finally:
+        conn.execute('PRAGMA foreign_keys = ON')
+    return True
+
+
 def init_db(conn: sqlite3.Connection) -> None:
     """Apply the schema idempotently to a connection without a pending transaction."""
     if conn.in_transaction:
@@ -72,6 +117,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     conn.row_factory = sqlite3.Row
     conn.execute('PRAGMA foreign_keys = ON')
     conn.executescript(SCHEMA)
+    _migrate_source_check(conn)
 
 
 def connect(path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:

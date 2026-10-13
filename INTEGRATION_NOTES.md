@@ -58,11 +58,15 @@ due_date: datetime.date   # convert on the way out of db.py, not a string
 estimated_hours: float
 progress_pct: float | int  # 0-100
 status: str                # "not_started" | "in_progress" | "submitted"
+source: str                # optional; only "fixture" changes anything
 ```
 
-`assess_risk` and `weekly_workload` only read these four fields. They ignore
-`weighting_pct` and `word_count` entirely — CLAUDE.md only mentions those for the
-`estimated_hours` proposal step in extraction, not for risk scoring.
+`assess_risk` reads the first four fields; `weekly_workload` also reads `source` via
+`.get`, so it can report the fabricated share of each week in
+`WeekLoad.fabricated_hours` and `fabricated_count`. A row with no `source` key counts
+as genuine, so pass a dict (which is what `db.list_assessments` returns). Both
+ignore `weighting_pct` and `word_count` entirely — CLAUDE.md only mentions those for
+the `estimated_hours` proposal step in extraction, not for risk scoring.
 
 ## Decisions made here that the team should sanity-check
 

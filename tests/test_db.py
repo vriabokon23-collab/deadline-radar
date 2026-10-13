@@ -76,6 +76,137 @@ def test_extracted_rows_require_source_quote(conn, assessment):
     assert db.list_assessments(conn) == []
 
 
+@pytest.mark.parametrize('source', db.MACHINE_SOURCES)
+def test_machine_sources_require_source_quote(conn, assessment, source):
+    """Rows the app generated must cite where the date came from."""
+    with pytest.raises(sqlite3.IntegrityError):
+        db.insert_assessment(conn, dict(assessment, source=source, source_quote=' '))
+    assert db.list_assessments(conn) == []
+
+
+def test_fixture_source_is_storable_and_distinct(conn, assessment):
+    """Fabricated rows need their own provenance value, not 'extracted'."""
+    assert 'fixture' in db.SOURCES
+    fixture_id = db.insert_assessment(conn, dict(assessment, source='fixture'))
+    extracted_id = db.insert_assessment(conn, dict(assessment, source='extracted'))
+
+    assert db.get_assessment(conn, fixture_id)['source'] == 'fixture'
+    assert db.get_assessment(conn, extracted_id)['source'] == 'extracted'
+    assert [r['id'] for r in db.list_assessments(conn)
+            if r['source'] == 'fixture'] == [fixture_id]
+
+
+# Pre-fixture-provenance schema: CREATE TABLE IF NOT EXISTS never revisits a CHECK.
+_LEGACY_ASSESSMENTS = """
+CREATE TABLE assessments (
+    id INTEGER PRIMARY KEY,
+    module_code TEXT NOT NULL CHECK(length(trim(module_code)) > 0),
+    module_name TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL CHECK(length(trim(title)) > 0),
+    type TEXT NOT NULL CHECK(type IN
+        ('essay','exam','coursework','presentation','problem_set','group_project','other')),
+    due_date TEXT NOT NULL,
+    due_time TEXT,
+    weighting_pct REAL CHECK(weighting_pct BETWEEN 0 AND 100),
+    word_count INTEGER CHECK(word_count IS NULL OR
+        (typeof(word_count) = 'integer' AND word_count >= 0)),
+    estimated_hours REAL NOT NULL DEFAULT 0 CHECK(estimated_hours >= 0),
+    status TEXT NOT NULL DEFAULT 'not_started'
+        CHECK(status IN ('not_started','in_progress','submitted')),
+    progress_pct REAL NOT NULL DEFAULT 0 CHECK(progress_pct BETWEEN 0 AND 100),
+    source TEXT NOT NULL DEFAULT 'manual' CHECK(source IN ('extracted','manual')),
+    confidence TEXT NOT NULL DEFAULT 'high' CHECK(confidence IN ('high','medium','low')),
+    source_quote TEXT NOT NULL DEFAULT '',
+    notes TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    CHECK(source != 'extracted' OR length(trim(source_quote)) > 0)
+);
+CREATE TABLE progress_log (
+    id INTEGER PRIMARY KEY,
+    assessment_id INTEGER NOT NULL REFERENCES assessments(id) ON DELETE CASCADE,
+    logged_at TEXT NOT NULL,
+    hours_spent REAL NOT NULL CHECK(hours_spent >= 0),
+    progress_pct_after REAL NOT NULL CHECK(progress_pct_after BETWEEN 0 AND 100),
+    note TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX assessments_due_date ON assessments(due_date, id);
+"""
+
+
+def _legacy_database(path):
+    legacy = sqlite3.connect(str(path))
+    legacy.executescript(_LEGACY_ASSESSMENTS)
+    legacy.execute(
+        'INSERT INTO assessments (module_code, title, type, due_date, estimated_hours, '
+        'status, progress_pct, source, confidence, source_quote, notes, created_at, '
+        "updated_at) VALUES ('COMP0001', 'Legacy Essay', 'essay', '2026-12-04', 20, "
+        "'in_progress', 40, 'manual', 'high', '', 'keep me', 'then', 'then')")
+    legacy.execute(
+        'INSERT INTO progress_log (assessment_id, logged_at, hours_spent, '
+        "progress_pct_after, note) VALUES (1, 'then', 8, 40, 'drafted intro')")
+    legacy.commit()
+    return legacy
+
+
+def test_legacy_database_rejects_fixture_before_migration(tmp_path, assessment):
+    """Guards the premise: without a rebuild the new value would raise, not persist."""
+    path = tmp_path / 'legacy.db'
+    legacy = _legacy_database(path)
+    try:
+        with pytest.raises(sqlite3.IntegrityError):
+            legacy.execute(
+                'INSERT INTO assessments (module_code, title, type, due_date, '
+                'estimated_hours, status, progress_pct, source, confidence, source_quote, '
+                "notes, created_at, updated_at) VALUES ('COMP0004', 'PS1', 'problem_set', "
+                "'2026-10-30', 15, 'not_started', 0, 'fixture', 'high', 'q', '', 'n', 'n')")
+    finally:
+        legacy.close()
+
+
+def test_connect_migrates_legacy_source_check(tmp_path, assessment):
+    """Opening an old database must widen the CHECK without losing rows."""
+    path = tmp_path / 'legacy.db'
+    _legacy_database(path).close()
+
+    conn = db.connect(path)
+    try:
+        # Existing data survived the table rebuild, including the FK-linked log.
+        rows = db.list_assessments(conn)
+        assert len(rows) == 1
+        assert rows[0]['title'] == 'Legacy Essay'
+        assert rows[0]['progress_pct'] == 40
+        assert rows[0]['source'] == 'manual'
+        history = db.get_progress_history(conn, rows[0]['id'])
+        assert [h['note'] for h in history] == ['drafted intro']
+
+        # ...and the migrated table now admits fixture provenance.
+        fixture_id = db.insert_assessment(conn, dict(assessment, source='fixture'))
+        assert db.get_assessment(conn, fixture_id)['source'] == 'fixture'
+
+        # Foreign keys are back on and the enum is still enforced.
+        assert conn.execute('PRAGMA foreign_keys').fetchone()[0] == 1
+        assert conn.execute('PRAGMA foreign_key_check').fetchall() == []
+        with pytest.raises(sqlite3.IntegrityError):
+            db.insert_assessment(conn, dict(assessment, source='nonsense'))
+
+        # Migration is a no-op once applied.
+        assert db._migrate_source_check(conn) is False
+    finally:
+        conn.close()
+
+
+def test_progress_log_survives_migration_without_cascade(tmp_path):
+    """The rebuild drops the assessments table; the cascade must not fire."""
+    path = tmp_path / 'legacy.db'
+    _legacy_database(path).close()
+    conn = db.connect(path)
+    try:
+        assert conn.execute('SELECT COUNT(*) FROM progress_log').fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
 def test_progress_logging_and_cascade(conn, assessment):
     aid = db.insert_assessment(conn, assessment)
     before = db.get_assessment(conn, aid)

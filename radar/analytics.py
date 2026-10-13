@@ -1,9 +1,9 @@
 """Weekly workload bucketing and risk scoring.
 
-This module is intentionally decoupled from ``radar.db`` and ``radar.calendar``:
-neither exists yet on this branch, and analytics logic is pure and easiest to test
-when it only deals in plain data. Callers (``app.py``) are expected to read rows from
-``radar.db`` and term weeks from ``radar.calendar`` and pass them in. See
+This module deals only in plain data: callers (``app.py``) read rows from ``radar.db``
+and term weeks from ``radar.calendar`` and pass them in, which keeps the logic pure
+and easy to test. The one import from ``radar.db`` is the ``source`` enum value for
+fabricated rows, so the provenance string is spelled in a single place. See
 ``INTEGRATION_NOTES.md`` for the exact interface the other two modules need to expose.
 """
 
@@ -12,6 +12,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any, Mapping, Sequence
+
+from radar.db import FABRICATED_SOURCE
 
 DEFAULT_HOURS_PER_WEEK = 10.0
 RISK_MARGIN_PCT = 20.0
@@ -39,11 +41,19 @@ class TermWeek:
 
 @dataclass(frozen=True)
 class WeekLoad:
-    """Remaining estimated hours due in a given term week."""
+    """Remaining estimated hours due in a given term week.
+
+    `fabricated_hours` and `fabricated_count` are the share of the two totals that
+    came from rows the offline fallback invented (`source = fixture`). They are a
+    breakdown, not a deduction: the totals still cover every unsubmitted row, so
+    the heatmap can show a crunch week and say how much of it is not real.
+    """
 
     week: TermWeek
     remaining_hours: float
     assessment_count: int
+    fabricated_hours: float = 0.0
+    fabricated_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -152,11 +162,14 @@ def weekly_workload(
 
     Submitted assessments are excluded entirely (see INTEGRATION_NOTES.md).
     Returns one WeekLoad per input term week, in week order, even when a week
-    has no work due.
+    has no work due. Fabricated rows are counted in the totals and reported
+    separately on each WeekLoad.
     """
     weeks_sorted = sorted(term_weeks, key=lambda w: w.start_date)
     hours_by_week = {week: 0.0 for week in weeks_sorted}
     count_by_week = {week: 0 for week in weeks_sorted}
+    fabricated_hours_by_week = {week: 0.0 for week in weeks_sorted}
+    fabricated_count_by_week = {week: 0 for week in weeks_sorted}
 
     for assessment in assessments:
         if assessment["status"] == "submitted":
@@ -164,14 +177,20 @@ def weekly_workload(
         week = week_containing(assessment["due_date"], weeks_sorted)
         if week is None:
             continue
-        hours_by_week[week] += remaining_hours(assessment)
+        hours = remaining_hours(assessment)
+        hours_by_week[week] += hours
         count_by_week[week] += 1
+        if assessment.get("source") == FABRICATED_SOURCE:
+            fabricated_hours_by_week[week] += hours
+            fabricated_count_by_week[week] += 1
 
     return [
         WeekLoad(
             week=week,
             remaining_hours=hours_by_week[week],
             assessment_count=count_by_week[week],
+            fabricated_hours=fabricated_hours_by_week[week],
+            fabricated_count=fabricated_count_by_week[week],
         )
         for week in weeks_sorted
     ]

@@ -46,13 +46,17 @@ def make_assessment(
     estimated_hours: float = 20.0,
     progress_pct: float = 0.0,
     status: str = "in_progress",
+    source: str | None = None,
 ) -> dict:
-    return {
+    assessment = {
         "due_date": due_date,
         "estimated_hours": estimated_hours,
         "progress_pct": progress_pct,
         "status": status,
     }
+    if source is not None:
+        assessment["source"] = source
+    return assessment
 
 
 # --- remaining_hours -------------------------------------------------------
@@ -211,3 +215,67 @@ def test_weekly_workload_excludes_submitted_assessments():
     week3 = next(load for load in loads if load.week.week_number == 3)
     assert week3.remaining_hours == 0.0
     assert week3.assessment_count == 0
+
+
+# --- fabricated fixture rows in the workload -------------------------------
+
+
+def test_weekly_workload_reports_fabricated_share_of_a_week():
+    weeks = term1_weeks()
+    assessments = [
+        make_assessment(due_date=date(2026, 10, 15), estimated_hours=10.0, source="extracted"),
+        make_assessment(due_date=date(2026, 10, 16), estimated_hours=20.0, source="fixture"),
+    ]
+    week3 = next(l for l in weekly_workload(assessments, weeks) if l.week.week_number == 3)
+    # Totals still cover both rows; the fabricated share is reported alongside.
+    assert week3.remaining_hours == pytest.approx(30.0)
+    assert week3.assessment_count == 2
+    assert week3.fabricated_hours == pytest.approx(20.0)
+    assert week3.fabricated_count == 1
+
+
+def test_fabricated_hours_discount_logged_progress():
+    weeks = term1_weeks()
+    assessments = [
+        make_assessment(due_date=date(2026, 10, 15), estimated_hours=20.0,
+                        progress_pct=75, source="fixture"),
+    ]
+    week3 = next(l for l in weekly_workload(assessments, weeks) if l.week.week_number == 3)
+    assert week3.fabricated_hours == pytest.approx(5.0)
+    assert week3.remaining_hours == pytest.approx(5.0)
+
+
+def test_genuine_and_unlabelled_rows_report_no_fabricated_hours():
+    weeks = term1_weeks()
+    assessments = [
+        make_assessment(due_date=date(2026, 10, 15), estimated_hours=10.0, source="extracted"),
+        make_assessment(due_date=date(2026, 10, 15), estimated_hours=10.0, source="manual"),
+        make_assessment(due_date=date(2026, 10, 15), estimated_hours=10.0),
+    ]
+    loads = weekly_workload(assessments, weeks)
+    assert all(load.fabricated_hours == 0.0 for load in loads)
+    assert all(load.fabricated_count == 0 for load in loads)
+    assert next(l for l in loads if l.week.week_number == 3).remaining_hours == pytest.approx(30.0)
+
+
+def test_submitted_fabricated_row_leaves_no_trace():
+    weeks = term1_weeks()
+    assessments = [
+        make_assessment(due_date=date(2026, 10, 15), estimated_hours=12.0,
+                        status="submitted", source="fixture"),
+    ]
+    week3 = next(l for l in weekly_workload(assessments, weeks) if l.week.week_number == 3)
+    assert week3.remaining_hours == 0.0
+    assert week3.fabricated_hours == 0.0
+    assert week3.fabricated_count == 0
+
+
+def test_weeks_without_fabricated_work_default_to_zero():
+    weeks = term1_weeks()
+    assessments = [
+        make_assessment(due_date=date(2026, 10, 15), estimated_hours=10.0, source="fixture"),
+    ]
+    loads = weekly_workload(assessments, weeks)
+    other_weeks = [load for load in loads if load.week.week_number != 3]
+    assert all(load.fabricated_hours == 0.0 for load in other_weeks)
+    assert sum(load.fabricated_count for load in loads) == 1
