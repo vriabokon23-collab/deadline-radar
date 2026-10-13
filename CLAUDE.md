@@ -33,7 +33,7 @@ Table `progress_log`: id, assessment_id, logged_at, hours_spent, progress_pct_af
 
 - `extracted` — Claude read the uploaded PDF and returned this row.
 - `manual` — the student typed it in, either on the Add form or as a new row in the review editor.
-- `fixture` — the app fabricated it via the offline fallback in `_generate_fixture_extractions`, because `ANTHROPIC_API_KEY` was missing, `DEADLINE_RADAR_FIXTURES=1` was set, or every API attempt failed. The dates, weightings and quotes are invented.
+- `fixture` — the app replayed a saved response from `tests/fixtures/*.json` via `radar.extract.load_fixture`, because `ANTHROPIC_API_KEY` was missing, `DEADLINE_RADAR_FIXTURES=1` was set, or both API attempts failed. Those files are currently hand-written rather than captured, so the dates, weightings and quotes are invented.
 
 `extracted` and `manual` are the only values a trustworthy row can have. Fixture rows must stay labelled all the way into the database so the dashboard can flag them; never relabel one as `extracted`. `source` is read-only in the review editor and is preserved by the edit form. SQLite enforces the enum, and machine sources (`extracted`, `fixture`) must carry a non-empty `source_quote`. Because the schema uses `CREATE TABLE IF NOT EXISTS`, widening this enum needs a table rebuild — see `_migrate_source_check` in `radar/db.py`. `db.FABRICATED_SOURCE` holds the `fixture` string for the `radar/` modules that branch on provenance.
 
@@ -53,10 +53,11 @@ Handbooks refer to deadlines as "Week 7", "Term 1 Week 10", or by UCL timetable 
 
 ## Extraction rules
 
-- One Claude call per uploaded PDF. Ask for JSON only, validate against a schema, retry once on invalid JSON, then surface an error in the UI.
-- Every extracted assessment must carry a source_quote and a confidence level.
+- One Claude call per uploaded PDF. Ask for JSON only, validate against a schema, retry once on invalid JSON, then surface an error in the UI. `radar.extract.MAX_ATTEMPTS` is 2 and there is no third attempt; the model is `MODEL` and is never silently swapped for an older one.
+- Every extracted assessment must carry a source_quote and a confidence level. A row missing either, or carrying an unknown `type` or `confidence`, is rejected rather than coerced — that costs one of the two attempts.
+- Claude reports the date phrase it found and never does the arithmetic: `radar/calendar.py` maps `Term 1 Week 10` to a date, and a low-confidence resolution drags the assessment down to low. A phrase the calendar cannot parse is quarantined on `UNRESOLVED_DUE_DATE` with confidence low and a note naming the phrase, because a handbook can genuinely leave a date open.
 - Extracted rows go to a review table first. Nothing is written to the database until the user clicks Confirm.
-- estimated_hours: Claude proposes a figure from type, weighting and word count; the user can override it.
+- estimated_hours: Claude proposes a figure from type, weighting and word count; `propose_estimated_hours` fills in a rough figure when it omits one, and the user can override either.
 - The offline fixture fallback must never pass itself off as a real extraction. `ExtractionResult` stamps `source` on every row it carries, the review gate badges the queue, and Confirm persists that label verbatim.
 
 ## Core features (MVP, must work by Thursday night)

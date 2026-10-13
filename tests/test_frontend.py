@@ -13,6 +13,7 @@ if str(_CURRENT_DIR) not in sys.path:
     sys.path.insert(0, str(_CURRENT_DIR))
 
 import app
+from radar import extract
 
 
 @pytest.fixture
@@ -202,19 +203,6 @@ def test_heatmap_separates_fabricated_hours(memory_db):
     assert sum(l.fabricated_hours for l in loads) == pytest.approx(40.0)
 
 
-def test_offline_extraction_fixture():
-    """Verify handbook PDF offline extraction returns structured candidates."""
-    result = app.extract_from_pdf(b"%PDF-1.4 test", "COMP0004_Algorithms.pdf")
-    res = result.assessments
-    assert len(res) == 2
-    assert res[0]["module_code"] == "COMP0004"
-    assert res[0]["confidence"] in app.CONFIDENCES
-    assert len(res[0]["source_quote"]) > 0
-
-    # Second item should be low confidence due to ambiguous week reference
-    assert res[1]["confidence"] == "low"
-
-
 def test_extraction_result_reports_fixture_fallback(monkeypatch):
     """Fixture replay must be reported to the caller, not silently returned."""
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
@@ -229,33 +217,6 @@ def test_extraction_result_reports_fixture_fallback(monkeypatch):
     forced = app.extract_from_pdf(b"%PDF-1.4 test", "COMP0004_Algorithms.pdf")
     assert forced.used_fixtures is True
     assert "DEADLINE_RADAR_FIXTURES" in forced.reason
-
-
-def test_normalize_extracted_batch():
-    """Verify that unformatted raw extracted items are properly cleaned."""
-    raw = [
-        {
-            "module_code": "comp0002",
-            "title": "Coursework 1",
-            "type": "COURSEWORK",
-            "due_date": "Term 1 Week 5",
-            "weighting_pct": "30",
-            "estimated_hours": "25",
-            "confidence": "HIGH",
-            "source_quote": "Due in Week 5",
-        }
-    ]
-    normalized = app._normalize_extracted_batch(raw)
-    assert len(normalized) == 1
-    item = normalized[0]
-    assert item["module_code"] == "comp0002"
-    assert item["type"] == "coursework"
-    assert item["weighting_pct"] == 30.0
-    assert item["estimated_hours"] == 25.0
-    assert item["confidence"] in app.CONFIDENCES
-    # due_date was resolved to a valid date
-    assert len(item["due_date"]) == 10
-    assert date.fromisoformat(item["due_date"])
 
 
 def test_manual_crud_and_progress_logging(memory_db):
@@ -397,7 +358,7 @@ def test_extraction_result_stamps_row_provenance(monkeypatch):
     assert [r["source"] for r in fixture.assessments] == ["fixture"] * len(fixture.assessments)
 
     # A genuine API result is stamped 'extracted' through the same single path.
-    api = app.ExtractionResult(app._normalize_extracted_batch([{
+    api = app.ExtractionResult(extract.validate_batch([{
         "module_code": "COMP0002",
         "title": "Coursework 1",
         "type": "coursework",
@@ -465,7 +426,7 @@ def test_confirmed_api_rows_are_labelled_extracted(tmp_path, monkeypatch):
     db_file = tmp_path / "test_radar.db"
     app.db.connect(db_file).close()
 
-    genuine = app._normalize_extracted_batch([{
+    genuine = extract.validate_batch([{
         "module_code": "COMP0002",
         "module_name": "Software Engineering",
         "title": "Coursework 1",

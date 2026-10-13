@@ -1,0 +1,48 @@
+{
+  "_comment": "Hand-authored, NOT a captured API response. Mirrors the ground truth in sample_data/README.md for ANTH0045_digital_anthropology.pdf, the deliberately hard handbook. Rows replayed from here are stamped source=fixture and must never be presented as a real extraction.",
+  "source_pdf": "sample_data/ANTH0045_digital_anthropology.pdf",
+  "assessments": [
+    {
+      "module_code": "ANTH0045",
+      "module_name": "Digital Anthropology: Research Methods",
+      "title": "Research essay",
+      "type": "essay",
+      "due_date": "2027-03-05",
+      "due_time": "12:00:00",
+      "weighting_pct": 60,
+      "word_count": 4000,
+      "estimated_hours": 40.0,
+      "confidence": "high",
+      "source_quote": "The essay must be submitted by 12 noon on Friday 5 March 2027 through the Moodle submission point for this course.",
+      "notes": "Word count excludes references and appendices."
+    },
+    {
+      "module_code": "ANTH0045",
+      "module_name": "Digital Anthropology: Research Methods",
+      "title": "Fieldwork notebook",
+      "type": "coursework",
+      "due_date": "2027-03-05",
+      "due_time": "12:00:00",
+      "weighting_pct": null,
+      "word_count": 2000,
+      "estimated_hours": 20.0,
+      "confidence": "medium",
+      "source_quote": "Seminar participation is not assessed directly, though the fieldwork notebook you keep across the term is, and it is handed in alongside the essay.",
+      "notes": "Marked pass/fail so carries no weighting. Date inherited from the essay, not stated."
+    },
+    {
+      "module_code": "ANTH0045",
+      "module_name": "Digital Anthropology: Research Methods",
+      "title": "Seminar presentation",
+      "type": "presentation",
+      "due_date": "second half of term",
+      "due_time": null,
+      "weighting_pct": 40,
+      "word_count": null,
+      "estimated_hours": 15.0,
+      "confidence": "low",
+      "source_quote": "Presentations run in the second half of term and your slot is allocated by the convenor in the first seminar, once we know how many students are taking the course and what their field sites are.",
+      "notes": "Schedule is not fixed in advance and has changed mid-term in previous years."
+    }
+  ]
+}

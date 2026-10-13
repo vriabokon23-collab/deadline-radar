@@ -1,0 +1,62 @@
+{
+  "_comment": "Hand-authored, NOT a captured API response. Mirrors the ground truth in sample_data/README.md for COMP0197_applied_machine_learning_systems.pdf. Replace with a real saved response once ANTHROPIC_API_KEY is available. Rows replayed from here are stamped source=fixture and must never be presented as a real extraction.",
+  "source_pdf": "sample_data/COMP0197_applied_machine_learning_systems.pdf",
+  "assessments": [
+    {
+      "module_code": "COMP0197",
+      "module_name": "Applied Machine Learning Systems",
+      "title": "Problem Set 1",
+      "type": "problem_set",
+      "due_date": "2026-12-04",
+      "due_time": "16:00:00",
+      "weighting_pct": 15,
+      "word_count": null,
+      "estimated_hours": 12.0,
+      "confidence": "high",
+      "source_quote": "Submit by 4 December 2026, 16:00 through the Moodle submission point.",
+      "notes": "Solutions released immediately after the deadline, so no late submission."
+    },
+    {
+      "module_code": "COMP0197",
+      "module_name": "Applied Machine Learning Systems",
+      "title": "Coursework 1: model card report",
+      "type": "coursework",
+      "due_date": "Week 5",
+      "due_time": null,
+      "weighting_pct": 35,
+      "word_count": 2500,
+      "estimated_hours": 25.0,
+      "confidence": "high",
+      "source_quote": "This component is due in Week 5 and is submitted as a single PDF.",
+      "notes": "Handbook gives no numbering scheme for the week."
+    },
+    {
+      "module_code": "COMP0197",
+      "module_name": "Applied Machine Learning Systems",
+      "title": "Group project: deployment case study",
+      "type": "group_project",
+      "due_date": "UCL timetable week 14",
+      "due_time": null,
+      "weighting_pct": 20,
+      "word_count": 4000,
+      "estimated_hours": 30.0,
+      "confidence": "high",
+      "source_quote": "The report is due in UCL timetable week 14.",
+      "notes": "Word count is for the whole team, not per member."
+    },
+    {
+      "module_code": "COMP0197",
+      "module_name": "Applied Machine Learning Systems",
+      "title": "Showcase presentation",
+      "type": "presentation",
+      "due_date": "2026-12-10",
+      "due_time": null,
+      "weighting_pct": 30,
+      "word_count": null,
+      "estimated_hours": 15.0,
+      "confidence": "high",
+      "source_quote": "The showcase runs all day on Thursday 10 December 2026 in Roberts 110.",
+      "notes": "Running order drawn at random; no time of day given."
+    }
+  ]
+}

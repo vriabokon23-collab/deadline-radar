@@ -1,0 +1,48 @@
+{
+  "_comment": "Hand-authored, NOT a captured API response. Mirrors the ground truth in sample_data/README.md for STAT0023_statistical_computing.pdf. Rows replayed from here are stamped source=fixture and must never be presented as a real extraction.",
+  "source_pdf": "sample_data/STAT0023_statistical_computing.pdf",
+  "assessments": [
+    {
+      "module_code": "STAT0023",
+      "module_name": "Statistical Computing and Data Communication",
+      "title": "In-course assessment 1",
+      "type": "coursework",
+      "due_date": "Term 1 Week 10",
+      "due_time": "16:00:00",
+      "weighting_pct": 30,
+      "word_count": null,
+      "estimated_hours": 20.0,
+      "confidence": "high",
+      "source_quote": "The deadline is Term 1 Week 10.",
+      "notes": "Handbook rules out timetable numbering but not calendar vs teaching."
+    },
+    {
+      "module_code": "STAT0023",
+      "module_name": "Statistical Computing and Data Communication",
+      "title": "In-course assessment 2: data communication report",
+      "type": "coursework",
+      "due_date": "two weeks after the reading week",
+      "due_time": "16:00:00",
+      "weighting_pct": null,
+      "word_count": 1500,
+      "estimated_hours": 15.0,
+      "confidence": "medium",
+      "source_quote": "The deadline falls two weeks after the reading week.",
+      "notes": "Weighting confirmed on Moodle at the start of term, so not stated here."
+    },
+    {
+      "module_code": "STAT0023",
+      "module_name": "Statistical Computing and Data Communication",
+      "title": "Take-home examination",
+      "type": "exam",
+      "due_date": "2027-01-11",
+      "due_time": "13:00:00",
+      "weighting_pct": 50,
+      "word_count": null,
+      "estimated_hours": 25.0,
+      "confidence": "medium",
+      "source_quote": "A three-hour take-home paper sat on Monday 11 January 2027 between 10:00 and 13:00, with a further thirty minutes allowed for submission.",
+      "notes": "Window ends 13:00 with 30 further minutes to submit, so 13:30 is also defensible."
+    }
+  ]
+}
