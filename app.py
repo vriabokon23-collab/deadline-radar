@@ -50,6 +50,8 @@ import radar.extract as extract
 # the implementation lives in radar/extract.py, never in a Streamlit callback.
 from radar.extract import ExtractionResult, extract_from_pdf
 
+from sample_data.seed import clear_demo_data, seed_demo_data
+
 try:
     from dotenv import load_dotenv
     load_dotenv()
@@ -60,7 +62,8 @@ except ImportError:
 # Constants & Configurations
 # ---------------------------------------------------------------------------
 DEFAULT_DB_FILE = Path(os.environ.get("RADAR_DB_PATH", _CURRENT_DIR / "data" / "radar.db"))
-REFERENCE_TODAY = date(2026, 10, 12)  # Hackathon week anchor
+# Demo day. sample_data/seed.py is tuned to this date, so move the two together.
+REFERENCE_TODAY = date(2026, 10, 16)
 
 ASSESSMENT_TYPES = list(db.ASSESSMENT_TYPES)
 STATUSES = list(db.STATUSES)
@@ -122,201 +125,6 @@ def get_all_term_weeks() -> list[analytics.TermWeek]:
                 )
             )
     return sorted(weeks, key=lambda w: w.start_date)
-
-
-# ---------------------------------------------------------------------------
-# Demo Seed Data Generator
-# ---------------------------------------------------------------------------
-DEMO_ASSESSMENTS = [
-    {
-        "module_code": "COMP0004",
-        "module_name": "Algorithms & Data Structures",
-        "title": "Problem Set 1 (Graph Proofs)",
-        "type": "problem_set",
-        "due_date": "2026-10-23",
-        "due_time": "16:00:00",
-        "weighting_pct": 20.0,
-        "word_count": None,
-        "estimated_hours": 25.0,
-        "status": "in_progress",
-        "progress_pct": 5.0,
-        "source": "extracted",
-        "confidence": "high",
-        "source_quote": "Problem Set 1 is due on Friday 23 October 2026 at 4pm.",
-        "notes": "Proof-heavy assignment; behind schedule.",
-    },
-    {
-        "module_code": "COMP0008",
-        "module_name": "Formal Languages",
-        "title": "Automata & Grammars Midterm",
-        "type": "coursework",
-        "due_date": "2026-10-19",
-        "due_time": "16:00:00",
-        "weighting_pct": 25.0,
-        "word_count": 1500,
-        "estimated_hours": 15.0,
-        "status": "in_progress",
-        "progress_pct": 10.0,
-        "source": "manual",
-        "confidence": "high",
-        "source_quote": "Manual entry from module moodle",
-        "notes": "Due next week; insufficient time remaining.",
-    },
-    {
-        "module_code": "COMP0002",
-        "module_name": "Software Engineering",
-        "title": "Coursework 1: Architecture Specification",
-        "type": "coursework",
-        "due_date": "2026-11-16",
-        "due_time": "16:00:00",
-        "weighting_pct": 30.0,
-        "word_count": 2500,
-        "estimated_hours": 25.0,
-        "status": "in_progress",
-        "progress_pct": 60.0,
-        "source": "extracted",
-        "confidence": "high",
-        "source_quote": "Coursework 1 must be submitted by Monday 16 November at 16:00.",
-        "notes": "System design and UML diagrams.",
-    },
-    {
-        "module_code": "COMP0002",
-        "module_name": "Software Engineering",
-        "title": "Final Team Project & Peer Review",
-        "type": "group_project",
-        "due_date": "2026-12-14",
-        "due_time": "17:00:00",
-        "weighting_pct": 70.0,
-        "word_count": 5000,
-        "estimated_hours": 50.0,
-        "status": "in_progress",
-        "progress_pct": 20.0,
-        "source": "extracted",
-        "confidence": "high",
-        "source_quote": "Final group deliverables due on the last week of Term 1, Monday 14 December.",
-        "notes": "Web deployment and documentation.",
-    },
-    {
-        "module_code": "COMP0004",
-        "module_name": "Algorithms & Data Structures",
-        "title": "Problem Set 2 (Dynamic Programming)",
-        "type": "problem_set",
-        "due_date": "2026-11-30",
-        "due_time": "16:00:00",
-        "weighting_pct": 15.0,
-        "word_count": None,
-        "estimated_hours": 20.0,
-        "status": "not_started",
-        "progress_pct": 0.0,
-        "source": "extracted",
-        "confidence": "low",
-        "source_quote": "Problem Set 2 is due in Term 1 Week 10 (teaching schedule).",
-        "notes": "Ambiguous week reference in handbook; check reading week offset.",
-    },
-    {
-        "module_code": "COMP0010",
-        "module_name": "Principles of Programming",
-        "title": "Interpreter Implementation Project",
-        "type": "coursework",
-        "due_date": "2026-11-30",
-        "due_time": "12:00:00",
-        "weighting_pct": 40.0,
-        "word_count": 3000,
-        "estimated_hours": 35.0,
-        "status": "not_started",
-        "progress_pct": 0.0,
-        "source": "manual",
-        "confidence": "high",
-        "source_quote": "Manual entry from syllabus",
-        "notes": "Build abstract syntax tree and bytecode interpreter.",
-    },
-    {
-        "module_code": "ENGF0001",
-        "module_name": "Engineering Challenges",
-        "title": "Team Technical Report 1",
-        "type": "coursework",
-        "due_date": "2026-10-09",
-        "due_time": "16:00:00",
-        "weighting_pct": 30.0,
-        "word_count": 2000,
-        "estimated_hours": 18.0,
-        "status": "submitted",
-        "progress_pct": 100.0,
-        "source": "extracted",
-        "confidence": "high",
-        "source_quote": "Submission deadline: Friday 9 October 2026, 16:00.",
-        "notes": "Submitted ahead of deadline.",
-    },
-    {
-        "module_code": "COMP0012",
-        "module_name": "Operating Systems",
-        "title": "Concurrency Kernel Lab",
-        "type": "coursework",
-        "due_date": "2027-02-05",
-        "due_time": "16:00:00",
-        "weighting_pct": 35.0,
-        "word_count": None,
-        "estimated_hours": 25.0,
-        "status": "not_started",
-        "progress_pct": 0.0,
-        "source": "manual",
-        "confidence": "high",
-        "source_quote": "Term 2 Syllabus",
-        "notes": "Thread synchronization primitives.",
-    },
-    {
-        "module_code": "COMP0014",
-        "module_name": "Computer Architecture",
-        "title": "Final Written Examination",
-        "type": "exam",
-        "due_date": "2027-05-14",
-        "due_time": "10:00:00",
-        "weighting_pct": 80.0,
-        "word_count": None,
-        "estimated_hours": 45.0,
-        "status": "not_started",
-        "progress_pct": 0.0,
-        "source": "manual",
-        "confidence": "high",
-        "source_quote": "UCL Central Exam Timetable",
-        "notes": "Term 3 exam hall paper.",
-    },
-]
-
-
-def seed_demo_data(conn: sqlite3.Connection) -> int:
-    """Populate database with representative UCL data exhibiting crunch and risk."""
-    conn.execute("DELETE FROM progress_log")
-    conn.execute("DELETE FROM assessments")
-    ids = db.insert_assessments(conn, DEMO_ASSESSMENTS)
-
-    # Key-based lookup to avoid index mismatch
-    all_rows = db.list_assessments(conn)
-    by_key = {(r["module_code"], r["title"]): r["id"] for r in all_rows}
-
-    if ("COMP0004", "Problem Set 1 (Graph Proofs)") in by_key:
-        p1_id = by_key[("COMP0004", "Problem Set 1 (Graph Proofs)")]
-        db.log_progress(conn, p1_id, hours_spent=1.5, progress_pct_after=5.0, note="Solved Question 1 part a")
-
-    if ("COMP0008", "Automata & Grammars Midterm") in by_key:
-        p8_id = by_key[("COMP0008", "Automata & Grammars Midterm")]
-        db.log_progress(conn, p8_id, hours_spent=1.5, progress_pct_after=10.0, note="Reviewed DFA minimization")
-
-    if ("COMP0002", "Coursework 1: Architecture Specification") in by_key:
-        se1_id = by_key[("COMP0002", "Coursework 1: Architecture Specification")]
-        db.log_progress(conn, se1_id, hours_spent=5.0, progress_pct_after=30.0, note="Drafted system context diagrams")
-        db.log_progress(conn, se1_id, hours_spent=8.0, progress_pct_after=60.0, note="Wrote detailed component architecture")
-
-    if ("COMP0002", "Final Team Project & Peer Review") in by_key:
-        se2_id = by_key[("COMP0002", "Final Team Project & Peer Review")]
-        db.log_progress(conn, se2_id, hours_spent=10.0, progress_pct_after=20.0, note="Initial GitHub repo setup & scaffold")
-
-    if ("ENGF0001", "Team Technical Report 1") in by_key:
-        eng_id = by_key[("ENGF0001", "Team Technical Report 1")]
-        db.log_progress(conn, eng_id, hours_spent=6.0, progress_pct_after=40.0, note="First draft compiled")
-        db.log_progress(conn, eng_id, hours_spent=12.0, progress_pct_after=100.0, note="Final proofreading and Moodle submission")
-
-    return len(ids)
 
 
 # ---------------------------------------------------------------------------
@@ -1268,7 +1076,15 @@ def main() -> None:
 
     if st.sidebar.button("🌱 Load Demo UCL Data", key="side_seed"):
         count = seed_demo_data(conn)
-        st.sidebar.success(f"Seeded {count} demo assessments!")
+        st.sidebar.success(
+            f"Seeded {count} demo assessments. Re-seeding replaces them rather than "
+            "duplicating, and leaves your own assessments alone."
+        )
+        st.rerun()
+
+    if st.sidebar.button("🧹 Remove Demo Data Only", key="side_clear_demo"):
+        removed = clear_demo_data(conn)
+        st.sidebar.info(f"Removed {removed} demo assessment(s). Your own rows are untouched.")
         st.rerun()
 
     if st.sidebar.button("🗑️ Reset All Data", key="side_reset"):

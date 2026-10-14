@@ -1,15 +1,69 @@
-# Deadline Radar backend
+# Deadline Radar
 
-Requires Python 3.11+. Install and test:
+UCL assessment tracker. Upload a module handbook, Claude extracts every
+assessment, you confirm or correct it, then track progress against the
+deadlines. The app surfaces crunch weeks and work at risk of slipping.
+
+Requires Python 3.11+. Install, test, run:
 
 ```sh
 python3.11 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 .venv/bin/python -m pytest
+.venv/bin/python -m streamlit run app.py
 ```
 
-`requirements.txt` covers these backend modules and tests. UI and extraction
-dependencies can be added by their owners when those modules land.
+Extraction needs `ANTHROPIC_API_KEY` in `.env`. Without a key, set
+`DEADLINE_RADAR_FIXTURES=1` to replay the recorded extractions in
+`tests/fixtures/` instead — the demo below runs end to end either way.
+
+## Three-minute demo script
+
+Load the story first: **🌱 Load Demo UCL Data** in the sidebar seeds ten
+assessments across four modules. Re-seeding replaces those rows rather than
+duplicating them, and **🧹 Remove Demo Data Only** takes them away again
+without touching anything you entered yourself. The seed is tuned to
+`app.REFERENCE_TODAY` (16 October 2026); move the two together or the
+narrative drifts.
+
+**0:00 — 📊 Dashboard. The problem.** Ten assessments, two flagged at risk,
+two due inside a fortnight. Open the risk banner on *Problem Set 1 (Graph
+Proofs)*: progress at 5% against 61% expected, and 23.8 hours of work left
+with one week to do it in. Contrast *Interpreter Implementation Project* —
+untouched but not yet late, flagged purely because 70 hours will not fit in
+the weeks remaining. Two different ways to be in trouble, caught by the same
+rule.
+
+**0:45 — 📈 Workload Heatmap.** Week commencing 30 November carries three
+deadlines and 115 hours, nearly three times the next worst week and far over
+the 20 hours-per-week line. That week is the thing you plan around, and
+nothing in the raw handbooks tells you it exists.
+
+**1:15 — 📄 Upload & Review.** Upload
+`sample_data/ANTH0045_digital_anthropology.pdf`. Three assessments come back,
+each carrying the handbook sentence its date was read from and a confidence
+level. *Seminar presentation* is flagged **low**: the handbook only says
+"presentations run in the second half of term", so the date is a placeholder
+and the note says so in as many words. The app shows its guess instead of
+hiding it.
+
+**2:00 — Review, then confirm.** Fix that placeholder date in the review
+table, select and delete a row you do not want, then hit **✅ Confirm & Save
+to Radar**. Only now does anything reach the database. **Nothing Claude
+extracts is written until you confirm it, because a wrong deadline you trust
+is worse than no deadline at all.**
+
+**2:30 — ⏱️ Progress Tracking, then export.** Log hours against the row you
+just confirmed; the dashboard, the heatmap and the risk flags all move
+together. Finish on **📥 Export Calendar (.ics)** in the sidebar and the
+whole term lands in your real calendar.
+
+Offline rehearsal: `DEADLINE_RADAR_FIXTURES=1 .venv/bin/python -m streamlit
+run app.py`. Fixture-sourced rows are marked as such and are deliberately
+withheld from the `.ics`, so a demo never exports an assessment Claude did
+not really read.
+
+## Backend reference
 
 ### Database and export
 

@@ -80,7 +80,7 @@ def test_seed_demo_data(memory_db):
     modules = {r["module_code"] for r in rows}
     assert "COMP0002" in modules
     assert "COMP0004" in modules
-    assert "ENGF0001" in modules
+    assert "COMP0012" in modules
 
     # Check progress log exists
     submitted_item = next(r for r in rows if r["status"] == "submitted")
