@@ -96,6 +96,9 @@ def _migrate_source_check(conn: sqlite3.Connection) -> bool:
     try:
         columns = ', '.join(_MIGRATED_COLUMNS)
         with conn:
+            # sqlite3 does not implicitly begin a transaction for DDL. Include
+            # the replacement table itself in rollback, as well as its rows.
+            conn.execute('BEGIN')
             conn.execute(f'CREATE TABLE assessments_migrated ({ASSESSMENTS_COLUMNS})')
             conn.execute(f'INSERT INTO assessments_migrated ({columns}) '
                          f'SELECT {columns} FROM assessments')
@@ -103,8 +106,8 @@ def _migrate_source_check(conn: sqlite3.Connection) -> bool:
             conn.execute('ALTER TABLE assessments_migrated RENAME TO assessments')
             conn.execute('CREATE INDEX IF NOT EXISTS assessments_due_date '
                          'ON assessments(due_date, id)')
-        if conn.execute('PRAGMA foreign_key_check').fetchone() is not None:
-            raise sqlite3.IntegrityError('source CHECK migration broke referential integrity')
+            if conn.execute('PRAGMA foreign_key_check').fetchone() is not None:
+                raise sqlite3.IntegrityError('source CHECK migration broke referential integrity')
     finally:
         conn.execute('PRAGMA foreign_keys = ON')
     return True
@@ -118,6 +121,16 @@ def init_db(conn: sqlite3.Connection) -> None:
     conn.execute('PRAGMA foreign_keys = ON')
     conn.executescript(SCHEMA)
     _migrate_source_check(conn)
+    # Install after migration, which rebuilds the table and drops its triggers.
+    # Provenance describes how a row originated, even after a student edits it.
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS assessments_preserve_source
+        BEFORE UPDATE OF source ON assessments
+        WHEN NEW.source IS NOT OLD.source
+        BEGIN
+            SELECT RAISE(ABORT, 'assessment source is immutable');
+        END
+    """)
 
 
 def connect(path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
@@ -220,6 +233,7 @@ def list_assessments(conn: sqlite3.Connection) -> list[dict[str, Any]]:
 
 def update_assessment(conn: sqlite3.Connection, assessment_id: int,
                       changes: Mapping[str, Any]) -> None:
+    """Edit an assessment while preserving its original source provenance."""
     values = _validate(changes)
     values['updated_at'] = _now()
     assignments = ', '.join(f'{field} = ?' for field in values)

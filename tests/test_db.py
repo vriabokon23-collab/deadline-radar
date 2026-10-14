@@ -96,6 +96,24 @@ def test_fixture_source_is_storable_and_distinct(conn, assessment):
             if r['source'] == 'fixture'] == [fixture_id]
 
 
+@pytest.mark.parametrize('source', db.SOURCES)
+@pytest.mark.parametrize('replacement', db.SOURCES)
+def test_edits_preserve_original_provenance(conn, assessment, source, replacement):
+    aid = db.insert_assessment(conn, dict(assessment, source=source))
+    before = db.get_assessment(conn, aid)
+    if source == replacement:
+        db.update_assessment(conn, aid, {'source': replacement, 'title': 'Edited'})
+        assert db.get_assessment(conn, aid)['title'] == 'Edited'
+    else:
+        with pytest.raises(sqlite3.IntegrityError, match='source is immutable'):
+            db.update_assessment(conn, aid, {'source': replacement, 'title': 'Edited'})
+        assert db.get_assessment(conn, aid) == before
+        with pytest.raises(sqlite3.IntegrityError, match='source is immutable'), conn:
+            conn.execute('UPDATE assessments SET source = ? WHERE id = ?',
+                         (replacement, aid))
+    assert db.get_assessment(conn, aid)['source'] == source
+
+
 # Pre-fixture-provenance schema: CREATE TABLE IF NOT EXISTS never revisits a CHECK.
 _LEGACY_ASSESSMENTS = """
 CREATE TABLE assessments (
@@ -184,6 +202,13 @@ def test_connect_migrates_legacy_source_check(tmp_path, assessment):
         fixture_id = db.insert_assessment(conn, dict(assessment, source='fixture'))
         assert db.get_assessment(conn, fixture_id)['source'] == 'fixture'
 
+        with pytest.raises(sqlite3.IntegrityError, match='source is immutable'):
+            db.update_assessment(conn, fixture_id, {'source': 'extracted'})
+        db.init_db(conn)
+        with pytest.raises(sqlite3.IntegrityError, match='source is immutable'):
+            db.update_assessment(conn, rows[0]['id'], {'source': 'fixture',
+                                                     'source_quote': 'invented'})
+
         # Foreign keys are back on and the enum is still enforced.
         assert conn.execute('PRAGMA foreign_keys').fetchone()[0] == 1
         assert conn.execute('PRAGMA foreign_key_check').fetchall() == []
@@ -203,6 +228,66 @@ def test_progress_log_survives_migration_without_cascade(tmp_path):
     conn = db.connect(path)
     try:
         assert conn.execute('SELECT COUNT(*) FROM progress_log').fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
+def test_failed_migration_restores_legacy_schema_and_data(tmp_path):
+    conn = _legacy_database(tmp_path / 'legacy.db')
+    try:
+        # Old connections could write orphan logs with foreign keys disabled.
+        conn.execute('UPDATE progress_log SET assessment_id = 999')
+        conn.commit()
+        schema = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name = 'assessments'").fetchone()[0]
+        assessments = conn.execute('SELECT * FROM assessments').fetchall()
+        history = conn.execute('SELECT * FROM progress_log').fetchall()
+        with pytest.raises(sqlite3.IntegrityError, match='referential integrity'):
+            db.init_db(conn)
+        assert conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name = 'assessments'").fetchone()[0] == schema
+        assert [tuple(row) for row in conn.execute('SELECT * FROM assessments')] == assessments
+        assert [tuple(row) for row in conn.execute('SELECT * FROM progress_log')] == history
+        assert conn.execute(
+            "SELECT name FROM sqlite_master WHERE name = 'assessments_migrated'").fetchone() is None
+        assert conn.execute('PRAGMA foreign_keys').fetchone()[0] == 1
+        assert not conn.in_transaction
+        # Repairing the orphan allows the same database to migrate on retry.
+        with conn:
+            conn.execute('UPDATE progress_log SET assessment_id = 1')
+        db.init_db(conn)
+        assert db._migrate_source_check(conn) is False
+    finally:
+        conn.close()
+
+
+def test_interrupted_migration_can_be_retried(tmp_path):
+    path = tmp_path / 'legacy.db'
+    conn = _legacy_database(path)
+    # Simulate a failure after the replacement table has been populated.
+    conn.set_authorizer(
+        lambda action, table, *args: sqlite3.SQLITE_DENY
+        if action == sqlite3.SQLITE_DROP_TABLE and table == 'assessments'
+        else sqlite3.SQLITE_OK
+    )
+    try:
+        with pytest.raises(sqlite3.DatabaseError, match='not authorized'):
+            db.init_db(conn)
+        assert not conn.in_transaction
+        assert conn.execute('PRAGMA foreign_keys').fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT name FROM sqlite_master WHERE name = 'assessments_migrated'"
+        ).fetchone() is None
+    finally:
+        conn.close()
+
+    # Retry through a fresh connection, as after restarting the application.
+    conn = db.connect(path)
+    try:
+        assert db.get_assessment(conn, 1)['title'] == 'Legacy Essay'
+        assert db.get_progress_history(conn, 1)[0]['note'] == 'drafted intro'
+        assert conn.execute('PRAGMA foreign_key_check').fetchall() == []
+        assert db._migrate_source_check(conn) is False
     finally:
         conn.close()
 
