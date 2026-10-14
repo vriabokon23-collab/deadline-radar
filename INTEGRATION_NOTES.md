@@ -98,6 +98,14 @@ the `estimated_hours` proposal step in extraction, not for risk scoring.
    a term's last modeled week gets attributed to that last week rather than returned
    as unbucketed. Only matters for a due date that falls in an inter-term break
    (e.g. over the winter holidays) — worth revisiting once real sample data exists.
+5. **A due date before the first modeled week is dropped, not bucketed.** This is
+   the asymmetric case of #4: there's no earlier week to attribute it to, so
+   `week_containing` returns `None` and `weekly_workload` silently excludes the
+   row's hours from every bucket (see
+   `test_weekly_workload_silently_drops_a_due_date_before_the_first_week`). In
+   practice this only bites if `get_all_term_weeks()` is called with a narrower
+   window than the data actually spans — worth a guard in `app.py` if that ever
+   happens, but out of scope for `analytics.py` itself.
 
 ## Dependency management caveat
 

@@ -140,6 +140,18 @@ def test_overdue_incomplete_assessment_is_flagged():
     assert result.at_risk is True
 
 
+def test_both_rules_can_fire_together():
+    """Behind on progress and short on time are independent checks, not exclusive."""
+    today = date(2026, 11, 2)
+    start = today - timedelta(weeks=1)
+    due = today + timedelta(weeks=1)  # 2-week span, 1 week left
+    a = make_assessment(due_date=due, estimated_hours=25.0, progress_pct=10)
+    result = assess_risk(a, today=today, start_date=start, hours_per_week=10.0)
+    assert result.at_risk is True
+    assert REASON_PROGRESS_BEHIND in result.reasons
+    assert REASON_INSUFFICIENT_TIME in result.reasons
+
+
 # --- assess_risk: submitted -------------------------------------------------
 
 
@@ -389,6 +401,22 @@ def test_weekly_workload_buckets_remaining_hours_per_week():
 
     # every input week is represented, even with zero load
     assert len(loads) == len(weeks)
+
+
+def test_weekly_workload_silently_drops_a_due_date_before_the_first_week():
+    """Documented gap behaviour (INTEGRATION_NOTES.md #4): unlike the inter-term
+
+    gap, which lands on the last modeled week, a due date before the first
+    modeled week has no earlier week to fall back to, so `week_containing`
+    returns None and the row's hours are left out of every bucket entirely.
+    """
+    weeks = term1_weeks()
+    assessments = [
+        make_assessment(due_date=date(2026, 9, 1), estimated_hours=10.0),  # before term start
+    ]
+    loads = weekly_workload(assessments, weeks)
+    assert sum(load.remaining_hours for load in loads) == 0.0
+    assert sum(load.assessment_count for load in loads) == 0
 
 
 def test_weekly_workload_excludes_submitted_assessments():
