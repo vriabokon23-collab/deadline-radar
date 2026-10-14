@@ -138,3 +138,13 @@ that smoke test runs, rather than trusting these ranges blindly.
   unaddressed — no caller currently passes a due date that falls in a break
   between terms, so it hasn't mattered in practice. Worth a test once a handbook
   with a holiday deadline shows up in `sample_data/`.
+
+## Frontend presentation update
+
+Native `st.navigation` routes six thin page scripts in `app_pages/` to the
+existing render functions in `app.py`. Database and analytics interfaces are
+unchanged. The reference date persists on `st.session_state.reference_today`
+and its Settings widget has a separate key so navigating away retains the date.
+Only the selected assessment form and workload term render; no hidden tabs
+compute the other views. Native light/dark theme tokens live in
+`.streamlit/config.toml`, with system fonts and no custom CSS.

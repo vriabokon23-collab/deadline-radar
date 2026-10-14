@@ -5,6 +5,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+from tests.ui_helpers import navigate
 from icalendar import Calendar
 from streamlit.testing.v1 import AppTest
 
@@ -46,13 +48,15 @@ def test_complete_demo_journey(tmp_path, monkeypatch, offline):
     at = AppTest.from_file(str(ROOT / 'app.py'), default_timeout=20)
     at.session_state['db_path'] = str(path)
     at.run()
-    at.sidebar.button(key='side_seed').click().run()
+    navigate(at, 'Settings')
+    at.button(key='side_seed').click().run()
+    navigate(at, 'Overview')
     assert not at.exception
-    assert next(m.value for m in at.metric if m.label == 'Total Tracked') == '10 items'
-    at.sidebar.radio(key='main_nav_radio').set_value('📄 Upload & Review').run()
+    assert next(m.value for m in at.metric if m.label == 'Tracked') == '10'
+    navigate(at, '📄 Upload & Review')
     handbook = ROOT / 'sample_data' / 'ANTH0045_digital_anthropology.pdf'
     at.file_uploader[0].set_value((handbook.name, handbook.read_bytes(), 'application/pdf')).run()
-    next(b for b in at.button if 'Extract Assessments' in b.label).click().run()
+    next(b for b in at.button if 'Extract deadlines' in b.label).click().run()
     assert not at.exception
     assert len(at.session_state['review_queue']) == 3
     if not offline:
@@ -65,7 +69,7 @@ def test_complete_demo_journey(tmp_path, monkeypatch, offline):
         'edited_rows': {2: {'due_date': '2027-02-25'}},
         'added_rows': [], 'deleted_rows': [1],
     }
-    next(b for b in at.button if 'Confirm & Save' in b.label).click().run()
+    next(b for b in at.button if 'Confirm & save' in b.label).click().run()
     assert not at.exception
     assert at.session_state['review_queue'] == []
     conn = db.connect(path)
@@ -75,13 +79,15 @@ def test_complete_demo_journey(tmp_path, monkeypatch, offline):
     assert presentation['due_date'] == '2027-02-25'
     assert 'corrected during review to 2027-02-25' in presentation['notes']
     assert presentation['source'] == ('fixture' if offline else 'extracted')
-    at.sidebar.radio(key='main_nav_radio').set_value('📊 Dashboard').run()
+    navigate(at, '📊 Dashboard')
     assert not at.exception
+    assert next(m.value for m in at.metric if m.label == 'Tracked') == '12'
+    navigate(at, 'Assessments')
     assert any('Research essay' in m.value for m in at.markdown)
-    at.sidebar.radio(key='main_nav_radio').set_value('📈 Workload Heatmap').run()
+    navigate(at, '📈 Workload Heatmap')
     assert not at.exception
-    assert len(at.get('plotly_chart')) == 4
-    at.sidebar.radio(key='main_nav_radio').set_value('🗓️ Plan My Week').run()
+    assert len(at.get('plotly_chart')) == 1
+    navigate(at, '🗓️ Plan My Week')
     at.button(key='plan_run').click().run()
     assert not at.exception
     assert at.session_state['week_plan'].items
@@ -101,13 +107,13 @@ def test_review_corrections_survive_navigation(tmp_path, monkeypatch):
     at.session_state['review_queue'] = extract.ExtractionResult(
         extract.load_fixture('ANTH0045.pdf'), 'fixture').assessments
     at.run()
-    at.sidebar.radio(key='main_nav_radio').set_value('📄 Upload & Review').run()
+    navigate(at, '📄 Upload & Review')
     at.session_state['review_data_editor'] = {
         'edited_rows': {2: {'due_date': '2027-02-25'}}, 'added_rows': [], 'deleted_rows': []}
     at.run()
-    at.sidebar.radio(key='main_nav_radio').set_value('📊 Dashboard').run()
-    at.sidebar.radio(key='main_nav_radio').set_value('📄 Upload & Review').run()
-    next(b for b in at.button if 'Confirm & Save' in b.label).click().run()
+    navigate(at, '📊 Dashboard')
+    navigate(at, '📄 Upload & Review')
+    next(b for b in at.button if 'Confirm & save' in b.label).click().run()
     assert not at.exception
     assert at.session_state['review_queue'] == []
     conn = db.connect(path)
@@ -126,8 +132,8 @@ def test_unresolved_date_must_be_corrected_before_save(tmp_path, monkeypatch):
     at.session_state['review_queue'] = extract.ExtractionResult(
         extract.load_fixture('ANTH0045.pdf'), 'fixture').assessments
     at.run()
-    at.sidebar.radio(key='main_nav_radio').set_value('📄 Upload & Review').run()
-    next(b for b in at.button if 'Confirm & Save' in b.label).click().run()
+    navigate(at, '📄 Upload & Review')
+    next(b for b in at.button if 'Confirm & save' in b.label).click().run()
     assert not at.exception
     assert any('unresolved placeholder' in e.value for e in at.error)
     assert len(at.session_state['review_queue']) == 3
@@ -149,15 +155,15 @@ def test_repeated_save_requires_explicit_duplicate_choice(tmp_path):
     at.session_state['db_path'] = str(path)
     at.session_state['review_queue'] = [row]
     at.run()
-    at.sidebar.radio(key='main_nav_radio').set_value('📄 Upload & Review').run()
-    next(b for b in at.button if 'Confirm & Save' in b.label).click().run()
+    navigate(at, '📄 Upload & Review')
+    next(b for b in at.button if 'Confirm & save' in b.label).click().run()
     assert not at.exception
     assert any('duplicate rows' in e.value for e in at.error)
     conn = db.connect(path)
     assert len(db.list_assessments(conn)) == 1
     conn.close()
     at.checkbox(key='review_allow_duplicates').check().run()
-    next(b for b in at.button if 'Confirm & Save' in b.label).click().run()
+    next(b for b in at.button if 'Confirm & save' in b.label).click().run()
     assert not at.exception
     conn = db.connect(path)
     assert len(db.list_assessments(conn)) == 2
