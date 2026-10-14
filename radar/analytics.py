@@ -87,16 +87,86 @@ def default_start_date(
     estimated_hours: float,
     hours_per_week: float = DEFAULT_HOURS_PER_WEEK,
 ) -> date:
-    """Fallback suggested start date until A14's backward-planner exists.
+    """Flat backward estimate, ignoring everything else that is due.
 
     Naively backs off from the due date by however many weeks the estimated
-    hours would take at `hours_per_week`. Callers should prefer passing an
-    explicit `start_date` to `assess_risk` once a real suggestion is available.
+    hours would take at `hours_per_week`. Kept as the fallback for dates
+    outside the term calendar; `suggested_start_date` is what callers should
+    pass to `assess_risk` when term weeks are available.
     """
     if hours_per_week <= 0:
         return due_date
     weeks_needed = estimated_hours / hours_per_week
     return due_date - timedelta(days=round(weeks_needed * 7))
+
+
+def suggested_start_date(
+    assessment: Assessment,
+    others: Sequence[Assessment],
+    term_weeks: Sequence[TermWeek],
+    hours_per_week: float = DEFAULT_HOURS_PER_WEEK,
+) -> date:
+    """Backward-plan the week work should start, given what else is due around it.
+
+    Walks back from the due week, taking whatever capacity each week has left
+    after the other assessments due in it, until the estimated hours are
+    covered. Returns the Monday of the week the work has to begin.
+
+    Three things make this better than `default_start_date`, which only divides
+    hours by a flat weekly rate:
+
+    - A week already carrying other deadlines offers less than
+      `hours_per_week`, so a crunch week pushes the start date earlier.
+    - Reading weeks are skipped on the first pass and only used if the work
+      cannot fit without them.
+    - The full `estimated_hours` are planned, not the remaining ones. The
+      answer to "when should this have started" must not improve just because
+      some of it is done, or a half-finished assessment would look healthier
+      than an untouched one with the same deadline.
+
+    Competing work is attributed to the week it is *due* in, matching the
+    heatmap, rather than being spread back over the weeks it will really be
+    done in — scheduling every assessment jointly is a different problem. The
+    returned Monday is also the start of the week capacity ran out in, not the
+    exact hour, so the suggestion errs early. Both biases point the same way:
+    warn sooner rather than later.
+
+    Falls back to `default_start_date` when the due date sits outside the term
+    calendar entirely.
+    """
+    due_date = assessment["due_date"]
+    needed = float(assessment["estimated_hours"] or 0.0)
+    if needed <= 0 or hours_per_week <= 0:
+        return due_date
+
+    weeks_sorted = sorted(term_weeks, key=lambda w: w.start_date)
+    due_week = week_containing(due_date, weeks_sorted)
+    if due_week is None:
+        return default_start_date(due_date, needed, hours_per_week)
+
+    competing = {week: 0.0 for week in weeks_sorted}
+    for other in others:
+        if other["status"] == "submitted":
+            continue
+        week = week_containing(other["due_date"], weeks_sorted)
+        if week is not None:
+            competing[week] += remaining_hours(other)
+
+    candidates = weeks_sorted[: weeks_sorted.index(due_week) + 1]
+
+    for avoid_reading_weeks in (True, False):
+        accumulated = 0.0
+        for week in reversed(candidates):
+            if avoid_reading_weeks and week.is_reading_week:
+                continue
+            accumulated += max(0.0, hours_per_week - competing[week])
+            if accumulated >= needed:
+                return week.start_date
+
+    # Not enough capacity anywhere before the deadline, even using reading
+    # weeks. The work needed more term than exists, so say so by pointing at
+    # the earliest week we have rather than inventing a date outside it.
+    return candidates[0].start_date
 
 
 def assess_risk(

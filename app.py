@@ -128,6 +128,23 @@ def get_all_term_weeks() -> list[analytics.TermWeek]:
     return sorted(weeks, key=lambda w: w.start_date)
 
 
+def suggested_start_dates(
+    rows: list[dict], term_weeks: list[analytics.TermWeek]
+) -> dict[int, date]:
+    """Backward-planned start date per assessment id.
+
+    Each row is planned against every other row, so a week already carrying
+    deadlines offers less capacity and pushes its neighbours' start dates
+    earlier. Feeds `assess_risk`, which otherwise assumes an empty term.
+    """
+    return {
+        row["id"]: analytics.suggested_start_date(
+            row, [other for other in rows if other["id"] != row["id"]], term_weeks
+        )
+        for row in rows
+    }
+
+
 # ---------------------------------------------------------------------------
 # UI View 1: Dashboard
 # ---------------------------------------------------------------------------
@@ -154,12 +171,15 @@ def render_dashboard(conn: sqlite3.Connection, today: date) -> None:
     at_risk_count = 0
     overdue_count = 0
 
+    rows = [to_analytics_row(a) for a in assessments]
+    starts = suggested_start_dates(rows, get_all_term_weeks())
+
     enriched = []
-    for a in assessments:
-        ar = to_analytics_row(a)
+    for a, ar in zip(assessments, rows):
         due_d = ar["due_date"]
         days_left = (due_d - today).days
-        risk_res = analytics.assess_risk(ar, today=today)
+        suggested_start = starts[ar["id"]]
+        risk_res = analytics.assess_risk(ar, today=today, start_date=suggested_start)
 
         if a["status"] != "submitted":
             if 0 <= days_left <= 14:
@@ -176,6 +196,7 @@ def render_dashboard(conn: sqlite3.Connection, today: date) -> None:
             "days_left": days_left,
             "risk": risk_res,
             "remaining_hours": analytics.remaining_hours(ar),
+            "suggested_start": suggested_start,
         })
 
     # Fabricated rows look exactly like real ones once saved, so say so up front.
@@ -285,15 +306,30 @@ def render_dashboard(conn: sqlite3.Connection, today: date) -> None:
                     time_str = f" at {a['due_time']}" if a.get("due_time") else ""
                     st.info(f"⏳ Due in **{days_left} days**\n({due_d.strftime('%a, %d %b')}{time_str})")
 
+            # Backward-planned start date. Shown for every outstanding row, not just
+            # flagged ones, because the useful version of this advice arrives early.
+            start_d = item["suggested_start"]
+            if a["status"] != "submitted":
+                days_since = (today - start_d).days
+                if days_since > 0:
+                    st.caption(
+                        f"🗓️ Work back from the deadline and this needed to start "
+                        f"**{start_d.strftime('%a, %d %b')}** — {days_since} days ago, "
+                        "once the other deadlines in those weeks are accounted for."
+                    )
+                elif days_since == 0:
+                    st.caption("🗓️ Working back from the deadline, this starts **this week**.")
+                else:
+                    st.caption(
+                        f"🗓️ Working back from the deadline, this can wait until "
+                        f"**{start_d.strftime('%a, %d %b')}** (in {-days_since} days)."
+                    )
+
             # Risk warning banner
             if risk.at_risk and a["status"] != "submitted":
                 reason_msgs = []
                 if analytics.REASON_PROGRESS_BEHIND in risk.reasons:
-                    exp_prog = analytics.expected_progress_pct(
-                        today,
-                        analytics.default_start_date(due_d, a["estimated_hours"]),
-                        due_d
-                    )
+                    exp_prog = analytics.expected_progress_pct(today, start_d, due_d)
                     reason_msgs.append(
                         f"Actual progress ({a['progress_pct']:.0f}%) trails expected progress "
                         f"({exp_prog:.0f}%) by more than 20 percentage points."
@@ -1017,7 +1053,9 @@ def render_plan_my_week(conn: sqlite3.Connection, today: date) -> None:
         return
 
     rows = [to_analytics_row(a) for a in assessments]
-    week_loads = analytics.weekly_workload(rows, get_all_term_weeks())
+    term_weeks = get_all_term_weeks()
+    week_loads = analytics.weekly_workload(rows, term_weeks)
+    starts = suggested_start_dates(rows, term_weeks)
 
     ctrl_col, btn_col = st.columns([3, 1])
     with ctrl_col:
@@ -1104,7 +1142,9 @@ def render_plan_my_week(conn: sqlite3.Connection, today: date) -> None:
                 st.markdown(f"### {item.priority}. {item.module_code} — {item.title}")
                 if row is not None:
                     days_left = (row["due_date"] - today).days
-                    risk = analytics.assess_risk(row, today=today)
+                    risk = analytics.assess_risk(
+                        row, today=today, start_date=starts[row["id"]]
+                    )
                     st.caption(
                         f"Due **{row['due_date'].strftime('%a, %d %b %Y')}** "
                         f"({days_left} days) | Progress **{row['progress_pct']:.0f}%** | "

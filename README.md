@@ -29,10 +29,12 @@ narrative drifts.
 **0:00 — 📊 Dashboard. The problem.** Ten assessments, two flagged at risk,
 two due inside a fortnight. Open the risk banner on *Problem Set 1 (Graph
 Proofs)*: progress at 5% against 61% expected, and 23.8 hours of work left
-with one week to do it in. Contrast *Interpreter Implementation Project* —
-untouched but not yet late, flagged purely because 70 hours will not fit in
-the weeks remaining. Two different ways to be in trouble, caught by the same
-rule.
+with one week to do it in. Then *Interpreter Implementation Project*,
+untouched and still six weeks out. Every card carries a start date planned
+backwards from its deadline through the weeks around it, and this one reads
+**28 September** — the first Monday of term, because 70 hours never fitted
+anywhere later. Work that looks early is already three weeks late, and only
+the second card needed the calendar to prove it.
 
 **0:45 — 📈 Workload Heatmap.** Week commencing 30 November carries three
 deadlines and 115 hours, nearly three times the next worst week and far over
@@ -125,6 +127,28 @@ and confidence when integrating extraction.
 
 UCL timetable week 1 starts 31 August 2026, verified against the
 [official academic calendar](https://www.ucl.ac.uk/srs/sites/srs/files/ucl_calendar_2026_27v2.pdf).
+
+### Suggested start dates and risk
+
+```python
+start = analytics.suggested_start_date(row, others, term_weeks)
+risk = analytics.assess_risk(row, today, start_date=start)
+```
+
+`suggested_start_date` walks back from the due week, taking whatever capacity
+each week has left after the other assessments due in it, and returns the
+Monday work has to begin. A week already carrying deadlines offers less than
+10 hours, so a crunch week pushes its neighbours earlier; reading weeks are
+skipped unless the work cannot fit without them; and the full
+`estimated_hours` are planned rather than the remaining ones, so the answer to
+"when should this have started" does not improve just because some of it is
+done. Outside the term calendar it falls back to `default_start_date`, the flat
+hours-divided-by-ten estimate.
+
+This is what `assess_risk` should be given. Left to its own default the flat
+estimate assumes an empty term, which makes the progress half of the rule
+strictly weaker than the hours half — it can never fire alone. `app.py` builds
+the whole set in one pass with `suggested_start_dates(rows, term_weeks)`.
 
 ### Weekly planning
 

@@ -39,32 +39,62 @@ def test_shape_is_ten_assessments_across_four_modules(seeded):
     assert len({row["module_code"] for row in rows}) == 4
 
 
-def test_exactly_two_at_risk_for_different_reasons(seeded):
-    """Both halves of the CLAUDE.md risk rule must be visible, separately."""
-    flagged = {
-        row["title"]: analytics.assess_risk(row, today=DEMO_TODAY)
-        for row in analytics_rows(seeded)
-        if analytics.assess_risk(row, today=DEMO_TODAY).at_risk
-    }
-    assert len(flagged) == 2
+def test_exactly_two_at_risk_on_both_halves_of_the_rule(seeded):
+    """Scored the way the dashboard scores it: against backward-planned start dates."""
+    rows = analytics_rows(seeded)
+    starts = app.suggested_start_dates(rows, app.get_all_term_weeks())
 
-    reason_sets = {title: set(result.reasons) for title, result in flagged.items()}
+    reason_sets = {}
+    for row in rows:
+        result = analytics.assess_risk(
+            row, today=DEMO_TODAY, start_date=starts[row["id"]]
+        )
+        if result.at_risk:
+            reason_sets[row["title"]] = set(result.reasons)
+
+    both = {analytics.REASON_PROGRESS_BEHIND, analytics.REASON_INSUFFICIENT_TIME}
     assert reason_sets == {
-        "Problem Set 1 (Graph Proofs)": {
-            analytics.REASON_PROGRESS_BEHIND,
-            analytics.REASON_INSUFFICIENT_TIME,
-        },
-        "Interpreter Implementation Project": {
-            analytics.REASON_INSUFFICIENT_TIME
-        },
+        "Problem Set 1 (Graph Proofs)": both,
+        "Interpreter Implementation Project": both,
     }
+
+
+def test_the_planner_backdates_the_crunch_week_project_into_the_first_week(seeded):
+    """The A14 beat: a start date the flat estimate gets wrong by three weeks.
+
+    Seventy hours due in the 30 November crunch week cannot be squeezed into
+    the fortnight the flat estimate allows for, because every week in between
+    is already carrying something. The planner says this had to begin on the
+    first Monday of term, which turns 'untouched but not yet late' into
+    'untouched and already weeks behind'.
+    """
+    rows = analytics_rows(seeded)
+    project = next(
+        row for row in rows if row["title"] == "Interpreter Implementation Project"
+    )
+    others = [row for row in rows if row["id"] != project["id"]]
+
+    flat = analytics.default_start_date(project["due_date"], project["estimated_hours"])
+    planned = analytics.suggested_start_date(project, others, app.get_all_term_weeks())
+    assert flat == date(2026, 10, 12)
+    assert planned == date(2026, 9, 28)
+
+    flat_risk = analytics.assess_risk(project, today=DEMO_TODAY, start_date=flat)
+    planned_risk = analytics.assess_risk(project, today=DEMO_TODAY, start_date=planned)
+    assert flat_risk.reasons == [analytics.REASON_INSUFFICIENT_TIME]
+    assert analytics.REASON_PROGRESS_BEHIND in planned_risk.reasons
 
 
 def test_submitted_work_is_never_flagged(seeded):
-    submitted = [row for row in analytics_rows(seeded) if row["status"] == "submitted"]
+    rows = analytics_rows(seeded)
+    starts = app.suggested_start_dates(rows, app.get_all_term_weeks())
+    submitted = [row for row in rows if row["status"] == "submitted"]
     assert submitted
     for row in submitted:
-        assert analytics.assess_risk(row, today=DEMO_TODAY).at_risk is False
+        result = analytics.assess_risk(
+            row, today=DEMO_TODAY, start_date=starts[row["id"]]
+        )
+        assert result.at_risk is False
 
 
 def test_crunch_week_dominates_the_heatmap(seeded):
