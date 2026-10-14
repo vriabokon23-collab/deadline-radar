@@ -68,6 +68,18 @@ def test_remaining_hours_scales_with_progress():
     assert remaining_hours(a) == 15.0
 
 
+def test_remaining_hours_treats_null_fields_as_zero():
+    """INTEGRATION_NOTES.md promises floats, never None, but db NULLs are one typo
+    in a future caller away — the `or 0.0` guards in analytics.py should hold."""
+    a = make_assessment(due_date=date(2026, 12, 1), estimated_hours=20.0)
+    a["progress_pct"] = None
+    assert remaining_hours(a) == 20.0
+
+    b = make_assessment(due_date=date(2026, 12, 1), estimated_hours=20.0)
+    b["estimated_hours"] = None
+    assert remaining_hours(b) == 0.0
+
+
 # --- expected_progress_pct --------------------------------------------------
 
 
@@ -365,6 +377,10 @@ def test_week_containing_returns_none_before_term_start():
     assert week_containing(date(2026, 9, 1), weeks) is None
 
 
+def test_week_containing_returns_none_for_an_empty_calendar():
+    assert week_containing(date(2026, 10, 15), []) is None
+
+
 def test_week_containing_attributes_inter_term_gap_to_the_earlier_term():
     """Documented gap behaviour (INTEGRATION_NOTES.md #4): a due date that falls
 
@@ -417,6 +433,13 @@ def test_weekly_workload_silently_drops_a_due_date_before_the_first_week():
     loads = weekly_workload(assessments, weeks)
     assert sum(load.remaining_hours for load in loads) == 0.0
     assert sum(load.assessment_count for load in loads) == 0
+
+
+def test_weekly_workload_with_no_term_weeks_drops_everything():
+    """An empty calendar (e.g. an unconfigured term) has nowhere to bucket into,
+    so every row is excluded rather than raising."""
+    assessments = [make_assessment(due_date=date(2026, 10, 15), estimated_hours=10.0)]
+    assert weekly_workload(assessments, []) == []
 
 
 def test_weekly_workload_excludes_submitted_assessments():
