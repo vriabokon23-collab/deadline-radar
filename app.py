@@ -6,6 +6,7 @@ Surfaces crunch weeks, tracks progress, and flags assessments at risk of slippin
 
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import date, datetime, time, timedelta
 import os
 from pathlib import Path
@@ -557,7 +558,13 @@ def render_upload_and_review(conn: sqlite3.Connection) -> None:
     )
 
     if uploaded_files:
-        if st.button(f"🚀 Extract Assessments from {len(uploaded_files)} PDF(s) with Claude", type="primary"):
+        extraction_method = (
+            "offline fixtures" if os.environ.get(extract.FIXTURES_ENV, "0").strip() == "1"
+            or not os.environ.get("ANTHROPIC_API_KEY", "").strip() else "Claude")
+        if st.session_state.review_queue:
+            st.caption("Confirm or discard the current review queue before extracting more handbooks.")
+        if st.button(f"🚀 Extract Assessments from {len(uploaded_files)} PDF(s) with {extraction_method}", type="primary",
+                     disabled=bool(st.session_state.review_queue)):
             extracted_items = []
             with st.spinner("Extracting assessments, resolving UCL term weeks, and proposing hours..."):
                 for uploaded in uploaded_files:
@@ -587,6 +594,8 @@ def render_upload_and_review(conn: sqlite3.Connection) -> None:
     st.divider()
 
     # The Review Gate
+    if "review_data_editor" not in st.session_state and "review_editor_draft" in st.session_state:
+        st.session_state.review_queue = deepcopy(st.session_state.review_editor_draft)
     queue = st.session_state.review_queue
     if not queue:
         st.info("The review table is currently empty. Upload handbooks above to extract assessments.")
@@ -658,6 +667,9 @@ def render_upload_and_review(conn: sqlite3.Connection) -> None:
         },
         key="review_data_editor",
     )
+    # Widget state is removed when its page is hidden. Restore the edited
+    # records as the next editor's input, rather than writing its read-only key.
+    st.session_state.review_editor_draft = edited_df.to_dict(orient="records")
 
     # Display inspectable low-confidence quotes
     with st.expander("🔍 Inspect Source Quotes & Low Confidence Details", expanded=(low_conf_count > 0)):
@@ -670,9 +682,29 @@ def render_upload_and_review(conn: sqlite3.Connection) -> None:
             )
 
     # Action Buttons
+    existing_deadlines = {
+        (a["module_code"].strip().casefold(), a["title"].strip().casefold(), a["due_date"])
+        for a in db.list_assessments(conn)
+    }
+    seen_deadlines = set(existing_deadlines)
+    duplicate_count = 0
+    for record in edited_df.to_dict(orient="records"):
+        identity = (str(record.get("module_code") or "").strip().casefold(),
+                    str(record.get("title") or "").strip().casefold(),
+                    str(record.get("due_date") or ""))
+        if identity in seen_deadlines:
+            duplicate_count += 1
+        seen_deadlines.add(identity)
+    allow_duplicates = False
+    if duplicate_count:
+        st.warning(f"{duplicate_count} review row(s) repeat a module, title and date already tracked or in this queue.")
+        allow_duplicates = st.checkbox("Save duplicate deadlines anyway", key="review_allow_duplicates")
     c_btn1, c_btn2, _ = st.columns([2, 2, 4])
     with c_btn1:
         if st.button("✅ Confirm & Save to Radar", type="primary"):
+            if duplicate_count and not allow_duplicates:
+                st.error("Nothing was saved. Remove the duplicate rows or explicitly choose to save them anyway.")
+                return
             # Validate and persist to DB
             to_save = []
             errors = []
@@ -684,6 +716,18 @@ def render_upload_and_review(conn: sqlite3.Connection) -> None:
                     t_title = str(row_dict.get("title") or "").strip()
                     d_date = str(row_dict.get("due_date") or "").strip()
                     a_type = str(row_dict.get("type") or "coursework").strip().lower()
+
+                    notes = str(row_dict.get("notes") or "")
+                    unresolved = " - placeholder, correct before confirming." in notes
+                    if unresolved and d_date == extract.UNRESOLVED_DUE_DATE:
+                        errors.append(
+                            f"Row {idx + 1}: the deadline is an unresolved placeholder. "
+                            "Correct its date from the module schedule or remove the row before saving.")
+                        continue
+                    if unresolved:
+                        notes = notes.replace(
+                            " - placeholder, correct before confirming.",
+                            f" - corrected during review to {d_date}.")
 
                     if not m_code or not t_title or not d_date:
                         errors.append(f"Row {idx + 1}: Module Code, Title, and Due Date are mandatory.")
@@ -741,7 +785,7 @@ def render_upload_and_review(conn: sqlite3.Connection) -> None:
                         "source": row_source,
                         "confidence": str(row_dict.get("confidence") or "high"),
                         "source_quote": quote,
-                        "notes": str(row_dict.get("notes") or ""),
+                        "notes": notes,
                     })
                 except (ValueError, TypeError, OverflowError) as exc:
                     errors.append(f"Row {idx + 1}: {exc}")
@@ -758,6 +802,7 @@ def render_upload_and_review(conn: sqlite3.Connection) -> None:
                 fixture_saved = sum(1 for r in to_save if r["source"] == "fixture")
                 st.session_state.review_queue = []
                 st.session_state.review_fixture_files = []
+                st.session_state.pop("review_editor_draft", None)
                 _queue_extraction_notice(
                     "success",
                     f"Successfully saved {len(inserted_ids)} assessment(s) to Deadline Radar!",
@@ -776,6 +821,7 @@ def render_upload_and_review(conn: sqlite3.Connection) -> None:
         if st.button("🗑️ Discard Review Queue"):
             st.session_state.review_queue = []
             st.session_state.review_fixture_files = []
+            st.session_state.pop("review_editor_draft", None)
             _queue_extraction_notice("info", "Discarded review queue.")
             st.rerun()
 
@@ -1055,7 +1101,8 @@ def render_plan_my_week(conn: sqlite3.Connection, today: date) -> None:
     )
 
     assessments = db.list_assessments(conn)
-    outstanding = [a for a in assessments if a["status"] != "submitted"]
+    outstanding = [a for a in assessments if a["status"] != "submitted"
+                   and analytics.remaining_hours(a) > 0]
     if not outstanding:
         st.info("Nothing outstanding to plan. Add assessments or load demo data first.")
         return
@@ -1085,7 +1132,7 @@ def render_plan_my_week(conn: sqlite3.Connection, today: date) -> None:
 
     # Held in session state so a slider nudge or a rerun does not re-bill the API.
     if asked:
-        with st.spinner("Asking Claude to prioritise your week..."):
+        with st.spinner("Preparing your weekly plan..."):
             try:
                 st.session_state.week_plan = plan.plan_week(
                     rows, week_loads, today, hours_available=hours_available)
@@ -1116,7 +1163,8 @@ def render_plan_my_week(conn: sqlite3.Connection, today: date) -> None:
 
     if not result.items:
         st.warning(
-            "The plan named nothing you are currently tracking."
+            ("No suggested work remains after matching this plan to your assessments."
+             if result.unmatched else "The planner returned no study allocations for this week.")
             + (f" It referred to: {', '.join(result.unmatched)}." if result.unmatched else "")
         )
         return
@@ -1136,7 +1184,7 @@ def render_plan_my_week(conn: sqlite3.Connection, today: date) -> None:
         st.warning(
             f"⚠️ This plan needs {result.total_hours:.1f} hours but you have "
             f"{result.hours_available:g}. The work does not fit in one week — consider an "
-            "extension request or dropping a lower-weighted component."
+            "conversation with your module lead about priorities or extension options."
         )
 
     if result.unmatched:
@@ -1191,6 +1239,12 @@ def main() -> None:
         # Sidebar Navigation & Settings
         st.sidebar.title("🎯 Deadline Radar")
         st.sidebar.caption("Claude Campus Hackathon — UCL Assessment Tracker")
+        if os.environ.get(extract.FIXTURES_ENV, "0").strip() == "1":
+            st.sidebar.caption("🧪 Extraction and planning: offline fixture mode")
+        elif not os.environ.get("ANTHROPIC_API_KEY", "").strip():
+            st.sidebar.caption("🧪 No API key configured: extraction and planning use fixtures")
+        else:
+            st.sidebar.caption("Extraction and planning: Claude API, with labelled fixture fallback")
 
         nav_page = st.sidebar.radio(
             "Navigation",
