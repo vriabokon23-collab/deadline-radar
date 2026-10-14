@@ -4,6 +4,15 @@ Written by the integrator while `radar/calendar.py` (A2) and `radar/db.py` (A3) 
 not yet exist on any branch. This is the contract the rest of the app needs to honor
 for analytics to wire in without changes. Update this file, don't let it drift.
 
+**Status: wired up.** Both modules now exist and `app.py` bridges them to analytics
+exactly as anticipated below — see `app.get_all_term_weeks()` (builds
+`list[analytics.TermWeek]` from `calendar.TERMS` / `calendar.term_weeks` /
+`calendar.is_reading_week`, since `radar/calendar.py` itself exposes dates and a
+separate `Term` dataclass rather than `analytics.TermWeek` directly) and
+`app.to_analytics_row()` (converts a `sqlite3.Row` into the plain dict shape below).
+`tests/test_frontend.py` exercises the full `db -> analytics -> calendar` path,
+closing the "Follow-up" item that used to be at the bottom of this file.
+
 ## What's here
 
 - `radar/analytics.py` — weekly workload bucketing (heatmap data) and risk scoring,
@@ -99,6 +108,18 @@ that smoke test runs, rather than trusting these ranges blindly.
 
 ## Follow-up once calendar.py and db.py exist
 
-- Add an integration test (not a unit test) exercising
-  `app.py` → `db.py` → `analytics.py` → `calendar.py` end to end with real data.
-- Re-check assumption 3 above against the actual dashboard summary line from A8.
+- ~~Add an integration test (not a unit test) exercising
+  `app.py` → `db.py` → `analytics.py` → `calendar.py` end to end with real data.~~
+  Done: `tests/test_frontend.py::test_workload_heatmap_and_crunch`,
+  `test_risk_indicators` and `test_heatmap_separates_fabricated_hours` seed a real
+  SQLite db, round-trip through `to_analytics_row`/`get_all_term_weeks`, and assert
+  on `weekly_workload`/`assess_risk` output.
+- ~~Re-check assumption 3 above against the actual dashboard summary line from A8.~~
+  Confirmed: `app.render_dashboard` and `app.render_workload_heatmap` both treat
+  submitted assessments as fully excluded from remaining-hours totals (see the
+  "Submitted" metric being counted separately from "At Risk"/heatmap totals in
+  `app.py`), matching assumption 3.
+- Assumption 4 (no inter-term gap handling in `week_containing`) is still
+  unaddressed — no caller currently passes a due date that falls in a break
+  between terms, so it hasn't mattered in practice. Worth a test once a handbook
+  with a holiday deadline shows up in `sample_data/`.
