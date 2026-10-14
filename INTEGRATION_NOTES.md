@@ -4,6 +4,15 @@ Written by the integrator while `radar/calendar.py` (A2) and `radar/db.py` (A3) 
 not yet exist on any branch. This is the contract the rest of the app needs to honor
 for analytics to wire in without changes. Update this file, don't let it drift.
 
+**Status: wired up.** Both modules now exist and `app.py` bridges them to analytics
+exactly as anticipated below — see `app.get_all_term_weeks()` (builds
+`list[analytics.TermWeek]` from `calendar.TERMS` / `calendar.term_weeks` /
+`calendar.is_reading_week`, since `radar/calendar.py` itself exposes dates and a
+separate `Term` dataclass rather than `analytics.TermWeek` directly) and
+`app.to_analytics_row()` (converts a `sqlite3.Row` into the plain dict shape below).
+`tests/test_frontend.py` exercises the full `db -> analytics -> calendar` path,
+closing the "Follow-up" item that used to be at the bottom of this file.
+
 ## What's here
 
 - `radar/analytics.py` — weekly workload bucketing (heatmap data) and risk scoring,
@@ -89,8 +98,23 @@ the `estimated_hours` proposal step in extraction, not for risk scoring.
    a term's last modeled week gets attributed to that last week rather than returned
    as unbucketed. Only matters for a due date that falls in an inter-term break
    (e.g. over the winter holidays) — worth revisiting once real sample data exists.
+5. **A due date before the first modeled week is dropped, not bucketed.** This is
+   the asymmetric case of #4: there's no earlier week to attribute it to, so
+   `week_containing` returns `None` and `weekly_workload` silently excludes the
+   row's hours from every bucket (see
+   `test_weekly_workload_silently_drops_a_due_date_before_the_first_week`). In
+   practice this only bites if `get_all_term_weeks()` is called with a narrower
+   window than the data actually spans — worth a guard in `app.py` if that ever
+   happens, but out of scope for `analytics.py` itself.
 
 ## Dependency management caveat
+
+Hackathon reliability review (14 October 2026): the frontend now requires
+Streamlit 1.65+, matching the verified local runtime and its native upload tests.
+The planner uses the same backward-planned start dates as the dashboard, rather
+than the flat fallback when term weeks are supplied. SDK retries are disabled
+so extraction and planning each retain the application's two-attempt limit;
+requests use a 30-second timeout. Live account access is still a rehearsal check.
 
 `requirements.txt` pins are provisional major-version ranges, written without a real
 `pip install` against the live `anthropic` SDK. A1 owns settling the exact
@@ -99,6 +123,28 @@ that smoke test runs, rather than trusting these ranges blindly.
 
 ## Follow-up once calendar.py and db.py exist
 
-- Add an integration test (not a unit test) exercising
-  `app.py` → `db.py` → `analytics.py` → `calendar.py` end to end with real data.
-- Re-check assumption 3 above against the actual dashboard summary line from A8.
+- ~~Add an integration test (not a unit test) exercising
+  `app.py` → `db.py` → `analytics.py` → `calendar.py` end to end with real data.~~
+  Done: `tests/test_frontend.py::test_workload_heatmap_and_crunch`,
+  `test_risk_indicators` and `test_heatmap_separates_fabricated_hours` seed a real
+  SQLite db, round-trip through `to_analytics_row`/`get_all_term_weeks`, and assert
+  on `weekly_workload`/`assess_risk` output.
+- ~~Re-check assumption 3 above against the actual dashboard summary line from A8.~~
+  Confirmed: `app.render_dashboard` and `app.render_workload_heatmap` both treat
+  submitted assessments as fully excluded from remaining-hours totals (see the
+  "Submitted" metric being counted separately from "At Risk"/heatmap totals in
+  `app.py`), matching assumption 3.
+- Assumption 4 (no inter-term gap handling in `week_containing`) is still
+  unaddressed — no caller currently passes a due date that falls in a break
+  between terms, so it hasn't mattered in practice. Worth a test once a handbook
+  with a holiday deadline shows up in `sample_data/`.
+
+## Frontend presentation update
+
+Native `st.navigation` routes six thin page scripts in `app_pages/` to the
+existing render functions in `app.py`. Database and analytics interfaces are
+unchanged. The reference date persists on `st.session_state.reference_today`
+and its Settings widget has a separate key so navigating away retains the date.
+Only the selected assessment form and workload term render; no hidden tabs
+compute the other views. Native light/dark theme tokens live in
+`.streamlit/config.toml`, with system fonts and no custom CSS.

@@ -16,7 +16,8 @@ from __future__ import annotations
 
 import base64
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, time
+import math
 import json
 import os
 from pathlib import Path
@@ -28,6 +29,7 @@ from radar.db import ASSESSMENT_TYPES, CONFIDENCES
 MODEL = 'claude-sonnet-5-5'
 MAX_ATTEMPTS = 2  # the first call plus the single retry CLAUDE.md allows
 MAX_TOKENS = 4096
+API_TIMEOUT_SECONDS = 30.0
 
 FIXTURES_ENV = 'DEADLINE_RADAR_FIXTURES'
 FIXTURES_DIR = Path(__file__).resolve().parents[1] / 'tests' / 'fixtures'
@@ -150,8 +152,12 @@ def _optional_number(item: Mapping[str, Any], key: str, cast, label: str):
     if value is None or value == '':
         return None
     try:
+        if isinstance(value, bool) or not math.isfinite(float(value)):
+            raise ValueError
+        if cast is int and float(value) != int(value):
+            raise ValueError
         return cast(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         raise ExtractionError(f'{label} {key!r} is not a number: {value!r}') from None
 
 
@@ -193,6 +199,14 @@ def validate_row(item: Any, index: int = 0) -> dict[str, Any]:
         notes = f'{note} {notes}'.strip()
 
     due_time = item.get('due_time')
+    if due_time:
+        try:
+            parsed_time = time.fromisoformat(str(due_time).strip())
+            if parsed_time.tzinfo is not None or parsed_time.microsecond:
+                raise ValueError
+            due_time = parsed_time.isoformat(timespec='seconds')
+        except ValueError:
+            raise ExtractionError(f'{label} has invalid local due_time: {due_time!r}') from None
     return {
         'module_code': str(item['module_code']).strip(),
         'module_name': str(item.get('module_name') or '').strip(),
@@ -330,7 +344,8 @@ def extract_from_pdf(
 
     if client is None:
         import anthropic
-        client = anthropic.Anthropic(api_key=api_key)
+        client = anthropic.Anthropic(
+            api_key=api_key, timeout=API_TIMEOUT_SECONDS, max_retries=0)
 
     last_error: Exception | None = None
     for _attempt in range(MAX_ATTEMPTS):

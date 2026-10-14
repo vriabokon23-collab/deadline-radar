@@ -71,3 +71,26 @@ def test_explicit_dates_and_unresolvable_input():
                  'week commencing 31 February', 'Term 1 Week 2 and Week 3']:
         with pytest.raises(ValueError):
             resolve_week_reference(text)
+
+
+@pytest.mark.parametrize('phrase,expected', [
+    ('Term 1 Week 14', date(2026, 11, 30)),
+    ('Term 2 Week 20', date(2027, 1, 11)),
+    ('Term 3 Week 35', date(2027, 4, 26)),
+])
+def test_unspecified_scheme_can_fall_back_to_timetable(phrase, expected):
+    result = resolve_week_reference(phrase)
+    assert result.date == expected
+    assert result.confidence == 'low'
+    assert result.source_quote == phrase
+    assert 'timetable' in result.reason.lower()
+    assert 'check' in result.reason.lower()
+
+
+def test_explicit_calendar_scheme_never_falls_back():
+    with pytest.raises(ValueError):
+        resolve_week_reference('Term 1 calendar week 14')
+    with pytest.raises(ValueError):
+        resolve_week_reference('Term 1 Week 14', scheme='calendar')
+    with pytest.raises(ValueError):
+        resolve_week_reference('Term 2 Week 14')

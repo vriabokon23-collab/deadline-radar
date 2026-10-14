@@ -68,6 +68,18 @@ def test_remaining_hours_scales_with_progress():
     assert remaining_hours(a) == 15.0
 
 
+def test_remaining_hours_treats_null_fields_as_zero():
+    """INTEGRATION_NOTES.md promises floats, never None, but db NULLs are one typo
+    in a future caller away — the `or 0.0` guards in analytics.py should hold."""
+    a = make_assessment(due_date=date(2026, 12, 1), estimated_hours=20.0)
+    a["progress_pct"] = None
+    assert remaining_hours(a) == 20.0
+
+    b = make_assessment(due_date=date(2026, 12, 1), estimated_hours=20.0)
+    b["estimated_hours"] = None
+    assert remaining_hours(b) == 0.0
+
+
 # --- expected_progress_pct --------------------------------------------------
 
 
@@ -140,6 +152,18 @@ def test_overdue_incomplete_assessment_is_flagged():
     assert result.at_risk is True
 
 
+def test_both_rules_can_fire_together():
+    """Behind on progress and short on time are independent checks, not exclusive."""
+    today = date(2026, 11, 2)
+    start = today - timedelta(weeks=1)
+    due = today + timedelta(weeks=1)  # 2-week span, 1 week left
+    a = make_assessment(due_date=due, estimated_hours=25.0, progress_pct=10)
+    result = assess_risk(a, today=today, start_date=start, hours_per_week=10.0)
+    assert result.at_risk is True
+    assert REASON_PROGRESS_BEHIND in result.reasons
+    assert REASON_INSUFFICIENT_TIME in result.reasons
+
+
 # --- assess_risk: submitted -------------------------------------------------
 
 
@@ -159,6 +183,12 @@ def test_default_start_date_backs_off_by_estimated_weeks():
     due = date(2026, 11, 20)
     start = default_start_date(due, estimated_hours=20.0, hours_per_week=10.0)
     assert start == due - timedelta(weeks=2)
+
+
+def test_default_start_date_with_zero_hours_per_week_is_the_due_date():
+    """A zero weekly budget can't back-plan anything; don't divide by zero."""
+    due = date(2026, 11, 20)
+    assert default_start_date(due, estimated_hours=20.0, hours_per_week=0.0) == due
 
 
 # --- suggested_start_date ----------------------------------------------------
@@ -287,6 +317,16 @@ def test_an_assessment_with_no_estimated_hours_needs_no_run_up():
     assert start == DUE_IN_WEEK_10
 
 
+def test_suggested_start_date_with_zero_hours_per_week_is_the_due_date():
+    start = suggested_start_date(
+        make_assessment(due_date=DUE_IN_WEEK_10, estimated_hours=20.0),
+        others=[],
+        term_weeks=term1_weeks(),
+        hours_per_week=0.0,
+    )
+    assert start == DUE_IN_WEEK_10
+
+
 def test_a_crowded_term_can_flag_work_the_flat_estimate_calls_healthy():
     """The point of feeding this into assess_risk: 10 hours is not 10 hours.
 
@@ -337,6 +377,26 @@ def test_week_containing_returns_none_before_term_start():
     assert week_containing(date(2026, 9, 1), weeks) is None
 
 
+def test_week_containing_returns_none_for_an_empty_calendar():
+    assert week_containing(date(2026, 10, 15), []) is None
+
+
+def test_week_containing_attributes_inter_term_gap_to_the_earlier_term():
+    """Documented gap behaviour (INTEGRATION_NOTES.md #4): a due date that falls
+
+    in a break between terms has no week of its own, so it lands on the last
+    modeled week of the term before it rather than being reported as unbucketed.
+    """
+    t1_last = TermWeek(term="T1", week_number=12, start_date=date(2026, 12, 14))
+    t2_first = TermWeek(term="T2", week_number=1, start_date=date(2027, 1, 11))
+    weeks = [t1_last, t2_first]
+
+    during_winter_break = date(2026, 12, 25)
+    found = week_containing(during_winter_break, weeks)
+
+    assert found is t1_last
+
+
 def test_weekly_workload_buckets_remaining_hours_per_week():
     weeks = term1_weeks()
     assessments = [
@@ -357,6 +417,29 @@ def test_weekly_workload_buckets_remaining_hours_per_week():
 
     # every input week is represented, even with zero load
     assert len(loads) == len(weeks)
+
+
+def test_weekly_workload_silently_drops_a_due_date_before_the_first_week():
+    """Documented gap behaviour (INTEGRATION_NOTES.md #4): unlike the inter-term
+
+    gap, which lands on the last modeled week, a due date before the first
+    modeled week has no earlier week to fall back to, so `week_containing`
+    returns None and the row's hours are left out of every bucket entirely.
+    """
+    weeks = term1_weeks()
+    assessments = [
+        make_assessment(due_date=date(2026, 9, 1), estimated_hours=10.0),  # before term start
+    ]
+    loads = weekly_workload(assessments, weeks)
+    assert sum(load.remaining_hours for load in loads) == 0.0
+    assert sum(load.assessment_count for load in loads) == 0
+
+
+def test_weekly_workload_with_no_term_weeks_drops_everything():
+    """An empty calendar (e.g. an unconfigured term) has nowhere to bucket into,
+    so every row is excluded rather than raising."""
+    assessments = [make_assessment(due_date=date(2026, 10, 15), estimated_hours=10.0)]
+    assert weekly_workload(assessments, []) == []
 
 
 def test_weekly_workload_excludes_submitted_assessments():

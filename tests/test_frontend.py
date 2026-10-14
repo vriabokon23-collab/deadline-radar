@@ -7,6 +7,8 @@ import sys
 
 import pytest
 
+from tests.ui_helpers import navigate
+
 # Ensure frontend and sibling worktrees are in sys.path
 _CURRENT_DIR = Path(__file__).resolve().parents[1]
 if str(_CURRENT_DIR) not in sys.path:
@@ -291,23 +293,23 @@ def test_streamlit_app_navigation_and_rendering(tmp_path):
     assert not at.exception
 
     # Navigate to Workload Heatmap
-    at.sidebar.radio(key="main_nav_radio").set_value("📈 Workload Heatmap").run()
+    navigate(at, "📈 Workload Heatmap")
     assert not at.exception
 
     # Navigate to Upload & Review
-    at.sidebar.radio(key="main_nav_radio").set_value("📄 Upload & Review").run()
+    navigate(at, "📄 Upload & Review")
     assert not at.exception
 
     # Navigate to Manage Assessments
-    at.sidebar.radio(key="main_nav_radio").set_value("✏️ Manage Assessments").run()
+    navigate(at, "✏️ Manage Assessments")
     assert not at.exception
 
     # Navigate to Progress Tracking
-    at.sidebar.radio(key="main_nav_radio").set_value("⏱️ Progress Tracking").run()
+    navigate(at, "⏱️ Progress Tracking")
     assert not at.exception
 
     # Return to Dashboard
-    at.sidebar.radio(key="main_nav_radio").set_value("📊 Dashboard").run()
+    navigate(at, "📊 Dashboard")
     assert not at.exception
 
 
@@ -326,12 +328,12 @@ def test_fixture_fallback_notice_survives_rerun(tmp_path, monkeypatch):
     at = AppTest.from_file(str(_CURRENT_DIR / "app.py"), default_timeout=30)
     at.session_state["db_path"] = str(db_file)
     at.run()
-    at.sidebar.radio(key="main_nav_radio").set_value("📄 Upload & Review").run()
+    navigate(at, "📄 Upload & Review")
     assert not at.exception
 
     at.file_uploader[0].set_value(("COMP0004_Algorithms.pdf", b"%PDF-1.4 fake", "application/pdf"))
     at.run()
-    extract_btn = next(b for b in at.button if "Extract Assessments" in b.label)
+    extract_btn = next(b for b in at.button if "Extract deadlines" in b.label)
     extract_btn.click().run()
     assert not at.exception
 
@@ -340,12 +342,12 @@ def test_fixture_fallback_notice_survives_rerun(tmp_path, monkeypatch):
     # ...and the fabrication notice is actually on screen alongside them.
     assert any("fabricated" in w.value for w in at.warning)
     assert any("Extracted 2 candidate assessments" in s.value for s in at.success)
-    assert any("FIXTURE DATA IN THIS QUEUE" in e.value for e in at.error)
+    assert any("Fixture data in this queue" in e.value for e in at.warning)
 
     # One-shot banners drain; the queue badge persists while the rows do.
     at.run()
-    assert not any("fabricated" in w.value for w in at.warning)
-    assert any("FIXTURE DATA IN THIS QUEUE" in e.value for e in at.error)
+    assert not any("not a real extraction" in w.value for w in at.warning)
+    assert any("Fixture data in this queue" in e.value for e in at.warning)
 
 
 def test_extraction_result_stamps_row_provenance(monkeypatch):
@@ -371,7 +373,7 @@ def test_extraction_result_stamps_row_provenance(monkeypatch):
 
 
 def test_confirmed_fixture_rows_stay_labelled_in_database(tmp_path, monkeypatch):
-    """Fabricated rows must remain distinguishable after Confirm & Save.
+    """Fabricated rows must remain distinguishable after Confirm & save.
 
     Regression: the Confirm handler hardcoded source='extracted' for every row,
     so a demo with no ANTHROPIC_API_KEY wrote invented deadlines into the
@@ -388,15 +390,15 @@ def test_confirmed_fixture_rows_stay_labelled_in_database(tmp_path, monkeypatch)
     at = AppTest.from_file(str(_CURRENT_DIR / "app.py"), default_timeout=30)
     at.session_state["db_path"] = str(db_file)
     at.run()
-    at.sidebar.radio(key="main_nav_radio").set_value("📄 Upload & Review").run()
+    navigate(at, "📄 Upload & Review")
 
     at.file_uploader[0].set_value(("COMP0004_Algorithms.pdf", b"%PDF-1.4 fake", "application/pdf"))
     at.run()
-    next(b for b in at.button if "Extract Assessments" in b.label).click().run()
+    next(b for b in at.button if "Extract deadlines" in b.label).click().run()
     assert not at.exception
     assert len(at.session_state["review_queue"]) == 2
 
-    next(b for b in at.button if "Confirm & Save" in b.label).click().run()
+    next(b for b in at.button if "Confirm & save" in b.label).click().run()
     assert not at.exception
     assert at.session_state["review_queue"] == []
 
@@ -413,9 +415,9 @@ def test_confirmed_fixture_rows_stay_labelled_in_database(tmp_path, monkeypatch)
     # Saving warned that fabricated data was committed...
     assert any("fixture data" in w.value for w in at.warning)
     # ...and the dashboard flags them rather than treating them as real.
-    at.sidebar.radio(key="main_nav_radio").set_value("📊 Dashboard").run()
+    navigate(at, "📊 Dashboard")
     assert not at.exception
-    assert any("fabricated fixture data" in e.value for e in at.error)
+    assert any("fabricated fixture data" in e.value for e in at.warning)
 
 
 def test_confirmed_api_rows_are_labelled_extracted(tmp_path, monkeypatch):
@@ -442,12 +444,12 @@ def test_confirmed_api_rows_are_labelled_extracted(tmp_path, monkeypatch):
     at = AppTest.from_file(str(_CURRENT_DIR / "app.py"), default_timeout=30)
     at.session_state["db_path"] = str(db_file)
     at.run()
-    at.sidebar.radio(key="main_nav_radio").set_value("📄 Upload & Review").run()
+    navigate(at, "📄 Upload & Review")
     # Seed the gate the way a successful API extraction would.
     at.session_state["review_queue"] = app.ExtractionResult(genuine, "api").assessments
     at.run()
 
-    next(b for b in at.button if "Confirm & Save" in b.label).click().run()
+    next(b for b in at.button if "Confirm & save" in b.label).click().run()
     assert not at.exception
 
     conn = app.db.connect(db_file)
@@ -457,8 +459,8 @@ def test_confirmed_api_rows_are_labelled_extracted(tmp_path, monkeypatch):
     finally:
         conn.close()
 
-    at.sidebar.radio(key="main_nav_radio").set_value("📊 Dashboard").run()
-    assert not any("fabricated fixture data" in e.value for e in at.error)
+    navigate(at, "📊 Dashboard")
+    assert not any("fabricated fixture data" in e.value for e in at.warning)
 
 
 def test_saved_fixture_rows_are_flagged_across_views(tmp_path):
@@ -483,17 +485,17 @@ def test_saved_fixture_rows_are_flagged_across_views(tmp_path):
     # Every view still renders with the new provenance value present.
     for view in ["📊 Dashboard", "📈 Workload Heatmap", "📄 Upload & Review",
                  "✏️ Manage Assessments", "⏱️ Progress Tracking"]:
-        at.sidebar.radio(key="main_nav_radio").set_value(view).run()
+        navigate(at, view)
         assert not at.exception, f"{view} raised"
 
-    at.sidebar.radio(key="main_nav_radio").set_value("📊 Dashboard").run()
-    assert any("fabricated fixture data" in e.value for e in at.error)
-    assert any("🧪 FIXTURE" in m.value for m in at.markdown)
+    navigate(at, "📊 Dashboard")
+    assert any("fabricated fixture data" in e.value for e in at.warning)
+    assert any("FIXTURE" in m.value for m in at.caption)
     # The quote a student would check to verify the date is itself invented.
-    assert any("fabricated fixture text" in e.value for e in at.error)
+    assert any("fabricated fixture text" in e.value for e in at.caption)
 
     # Deleting them requires finding them in the management selectors.
-    at.sidebar.radio(key="main_nav_radio").set_value("✏️ Manage Assessments").run()
+    navigate(at, "✏️ Manage Assessments")
     assert any("FIXTURE" in opt for sb in at.selectbox for opt in (sb.options or []))
 
 
@@ -606,3 +608,76 @@ def test_progress_completion_submitted_workflow(memory_db):
     assert submitted_rec["status"] == "submitted"
 
 
+
+@pytest.mark.parametrize('changes', [{'due_time': '25:00'}, {'word_count': 2.5},
+                                     {'estimated_hours': -1}])
+def test_invalid_review_keeps_queue_and_database_unchanged(tmp_path, changes):
+    from streamlit.testing.v1 import AppTest
+    db_file = tmp_path / 'review.db'
+    at = AppTest.from_file(str(_CURRENT_DIR / 'app.py'), default_timeout=15)
+    at.session_state['db_path'] = str(db_file)
+    at.session_state['review_queue'] = [{
+        'module_code': 'TEST0001', 'title': 'Essay', 'type': 'essay',
+        'due_date': '2026-12-04', 'source': 'manual', 'estimated_hours': 20,
+        **changes,
+    }]
+    at.run()
+    navigate(at, '📄 Upload & Review')
+    next(b for b in at.button if 'Confirm & save' in b.label).click().run()
+    assert not at.exception
+    assert at.error
+    assert len(at.session_state['review_queue']) == 1
+    conn = app.db.connect(db_file)
+    try:
+        assert app.db.list_assessments(conn) == []
+    finally:
+        conn.close()
+
+
+def test_progress_picker_preserves_duplicates_and_submission_is_explicit(tmp_path):
+    from streamlit.testing.v1 import AppTest
+    db_file = tmp_path / 'progress.db'
+    conn = app.db.connect(db_file)
+    data = {'module_code': 'TEST0001', 'title': 'Essay', 'type': 'essay',
+            'due_date': '2026-12-04', 'estimated_hours': 20}
+    ids = [app.db.insert_assessment(conn, data) for _ in range(2)]
+    conn.close()
+    at = AppTest.from_file(str(_CURRENT_DIR / 'app.py'), default_timeout=15)
+    at.session_state['db_path'] = str(db_file)
+    at.run()
+    navigate(at, 'Settings')
+    assert at.button(key='side_reset').disabled
+    navigate(at, '⏱️ Progress Tracking')
+    assert len(at.selectbox[0].options) == 2
+    at.slider[0].set_value(100)
+    next(c for c in at.checkbox if 'Submitted' in c.label).check()
+    next(b for b in at.button if 'Record progress' in b.label).click().run()
+    assert not at.exception
+    conn = app.db.connect(db_file)
+    try:
+        assert app.db.get_assessment(conn, ids[0])['status'] == 'submitted'
+        assert app.db.get_assessment(conn, ids[1])['progress_pct'] == 0
+    finally:
+        conn.close()
+
+
+def test_plan_is_invalidated_when_progress_changes(tmp_path, monkeypatch):
+    from streamlit.testing.v1 import AppTest
+    monkeypatch.setenv('DEADLINE_RADAR_FIXTURES', '1')
+    db_file = tmp_path / 'plan.db'
+    conn = app.db.connect(db_file)
+    app.seed_demo_data(conn)
+    target = app.db.list_assessments(conn)[0]['id']
+    conn.close()
+    at = AppTest.from_file(str(_CURRENT_DIR / 'app.py'), default_timeout=15)
+    at.session_state['db_path'] = str(db_file)
+    at.run()
+    navigate(at, '🗓️ Plan My Week')
+    at.button(key='plan_run').click().run()
+    assert at.session_state['week_plan'] is not None
+    conn = app.db.connect(db_file)
+    app.db.log_progress(conn, target, 1, 40)
+    conn.close()
+    at.run()
+    assert not at.exception
+    assert at.session_state['week_plan'] is None

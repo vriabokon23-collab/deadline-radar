@@ -17,59 +17,63 @@ Extraction needs `ANTHROPIC_API_KEY` in `.env`. Without a key, set
 `DEADLINE_RADAR_FIXTURES=1` to replay the recorded extractions in
 `tests/fixtures/` instead — the demo below runs end to end either way.
 
+## Interface
+
+Navigate between **Overview**, **Assessments**, **Planner**, **Workload**,
+**Import** and **Settings**. Overview shows the nearest six open deadlines and
+an eight-week workload preview. Assessments contains the full searchable list,
+quick edit and progress actions, and Add / Edit / Progress / Delete views.
+
+The default theme is light, with a neutral palette and muted blue accent. Switch
+to Dark or System through Streamlit's top-right app menu → Settings → Theme.
+Native controls, wrapping toolbars and stacking columns keep the interface usable
+at narrow widths; the import grid scrolls horizontally when needed. Themes use
+local system fonts and need no external font downloads or custom CSS.
+
 ## Three-minute demo script
 
-Load the story first: **🌱 Load Demo UCL Data** in the sidebar seeds ten
-assessments across four modules. Re-seeding replaces those rows rather than
-duplicating them, and **🧹 Remove Demo Data Only** takes them away again
-without touching anything you entered yourself. The seed is tuned to
-`app.REFERENCE_TODAY` (16 October 2026); move the two together or the
-narrative drifts.
+Prepare the story in **Settings → Load demo data**. This seeds ten assessments
+across four modules and preserves your own rows. Re-seeding replaces demo rows,
+and **Remove demo data** removes only those rows. Set the reference date to
+**16 October 2026**; the seed is tuned to `app.REFERENCE_TODAY`.
 
-**0:00 — 📊 Dashboard. The problem.** Ten assessments, two flagged at risk,
-two due inside a fortnight. Open the risk banner on *Problem Set 1 (Graph
-Proofs)*: progress at 5% against 61% expected, and 23.8 hours of work left
-with one week to do it in. Then *Interpreter Implementation Project*,
-untouched and still six weeks out. Every card carries a start date planned
-backwards from its deadline through the weeks around it, and this one reads
-**28 September** — the first Monday of term, because 70 hours never fitted
-anywhere later. Work that looks early is already three weeks late, and only
-the second card needed the calendar to prove it.
+**0:00 — Overview.** Ten assessments, two at risk, two due inside a fortnight.
+Open assessment details for *Problem Set 1 (Graph Proofs)*: progress is 5%
+against 61% expected, with 23.8 hours left. *Interpreter Implementation Project*
+is six weeks out, but its suggested start was 28 September because the workload
+around it leaves too little capacity later. Overview keeps the next deadlines
+visible, with the full list available under Assessments.
 
-**0:45 — 📈 Workload Heatmap.** Week commencing 30 November carries three
-deadlines and 115 hours, nearly three times the next worst week and far over
-the 20 hours-per-week line. That week is the thing you plan around, and
-nothing in the raw handbooks tells you it exists.
+**0:45 — Workload.** Term 1's week of 30 November has three deadlines and
+115 remaining hours. The 20-hour reference line makes the bottleneck clear.
+Switch terms using the segmented control. (R) marks reading weeks; hatched bars
+contain fixture hours, with the exact split in the tooltip.
 
-**1:15 — 📄 Upload & Review.** Upload
-`sample_data/ANTH0045_digital_anthropology.pdf`. Three assessments come back,
-each carrying the handbook sentence its date was read from and a confidence
-level. *Seminar presentation* is flagged **low**: the handbook only says
-"presentations run in the second half of term", so the date is a placeholder
-and the note says so in as many words. The app shows its guess instead of
-hiding it.
+**1:15 — Import.** Upload `sample_data/ANTH0045_digital_anthropology.pdf` in
+step 1. Three candidate assessments appear in step 2. The source quotes expose
+where the dates came from. *Seminar presentation* is low confidence because its
+slot is not specified. Correct the placeholder from the module schedule or remove
+that row; uncorrected placeholders prevent saving.
 
-**2:00 — Review, then confirm.** Fix that placeholder date in the review
-table, select and delete a row you do not want, then hit **✅ Confirm & Save
-to Radar**. Only now does anything reach the database. **Nothing Claude
-extracts is written until you confirm it, because a wrong deadline you trust
-is worse than no deadline at all.**
+**2:00 — Review and save.** Edit a date, select and delete an unwanted row, then
+use **Confirm & save** in step 3. Nothing reaches the database until confirmation.
+Review corrections survive navigating to another page. Repeated deadlines require
+an explicit duplicate-save choice.
 
-**2:30 — ⏱️ Progress Tracking, then export.** Log hours against the row you
-just confirmed; the dashboard, the heatmap and the risk flags all move
-together. Finish on **📥 Export Calendar (.ics)** in the sidebar and the
-whole term lands in your real calendar.
+**2:30 — Assessments → Progress, then export.** Use **Log progress** beside an
+assessment. Record a work session and, if applicable, explicitly mark it Submitted.
+The list, workload and risk flags update together. Finish on **Export calendar**
+in the sidebar.
 
-**If there is time — 🗓️ Plan My Week.** Set a realistic hours budget and
-press *Plan my week*. Claude ranks what to work on and says why, citing the
-deadline, the risk flag or the crunch week. Nothing on that page is saved.
-Left out of the three minutes above on purpose: the rehearsed run is the
-MVP, and this is the bonus if the room is still with you.
+**If there is time — Planner.** Set a weekly hours budget and select
+**Generate plan**. The seven-day plan lists ranked priorities with hours and
+reasons. Suggestions do not change assessments; logging work remains a separate
+student action.
 
 Offline rehearsal: `DEADLINE_RADAR_FIXTURES=1 .venv/bin/python -m streamlit
-run app.py`. Fixture-sourced rows are marked as such and are deliberately
-withheld from the `.ics`, so a demo never exports an assessment Claude did
-not really read.
+run app.py`. Fixture rows remain labelled and are excluded from calendar export.
+The seeded demo rows are deliberately exportable. The offline planner uses a
+synthetic plan, clearly identified on its page.
 
 ## Backend reference
 
@@ -179,3 +183,35 @@ because the honest answer is sometimes that the work does not fit.
 suggestion, and `summarise_state` is a pure function so the question of what
 the model is allowed to see is testable without a network call.
 
+
+## Demo readiness checks
+
+Use a separate database for rehearsal so demo actions do not affect your own work:
+
+```sh
+RADAR_DB_PATH=/tmp/deadline-radar-demo.db DEADLINE_RADAR_FIXTURES=1 .venv/bin/python -m streamlit run app.py
+```
+
+The reference date in Settings defaults to **16 October 2026** for the seeded
+story. Change it when tracking real work. Fixture files are hand-written synthetic
+responses, not captured API responses; their labels survive review and saving,
+and they are excluded from calendar export. The seeded demo rows are deliberately
+exportable, so import demo calendars only into a disposable calendar.
+
+Before presenting, rehearse upload → review → confirm → progress → dashboard →
+heatmap → export. The submission checkbox requires an explicit choice. Invalid
+review entries save nothing and keep the queue for correction. Resetting all data
+requires a separate confirmation checkbox. Plans are cleared when assessments,
+progress or the reference date change; changing the budget keeps the previous plan
+with a reminder to regenerate it.
+
+API requests have a 30-second timeout and no SDK retries; the application makes
+at most two attempts before visibly switching to fixtures. The pinned model stays
+`claude-sonnet-5-5`. A live call with the presentation account and an actual import
+into the intended calendar app still need rehearsal; automated tests use mocked
+API clients and parse exported calendar bytes without contacting either service.
+
+Known limitation: holiday deadlines are attributed to the preceding term week,
+and deadlines before the academic calendar are absent from workload buckets.
+The dashboard still lists them. Use in-term sample handbooks for the rehearsed
+heatmap story.

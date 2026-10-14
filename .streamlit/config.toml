@@ -1,0 +1,45 @@
+# Native theme tokens; no DOM selectors or external font downloads.
+[theme]
+base = "light"
+font = "sans-serif"
+baseFontSize = 14
+headingFontSizes = ["30px", "23px", "18px", "16px", "14px", "12px"]
+headingFontWeights = [600, 600, 600, 600, 600, 500]
+baseRadius = "6px"
+buttonRadius = "6px"
+showWidgetBorder = true
+showSidebarBorder = true
+
+[theme.light]
+primaryColor = "#456a9e"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f4f5f7"
+textColor = "#242933"
+borderColor = "#e2e5ea"
+blueColor = "#456a9e"
+greenColor = "#38765a"
+redColor = "#b54a50"
+orangeColor = "#9a6a2e"
+chartCategoricalColors = ["#577baf", "#bc8140", "#b54a50", "#38765a"]
+dataframeHeaderBackgroundColor = "#f4f5f7"
+
+[theme.light.sidebar]
+backgroundColor = "#f7f8fa"
+secondaryBackgroundColor = "#eceff3"
+
+[theme.dark]
+primaryColor = "#8daedb"
+backgroundColor = "#181b21"
+secondaryBackgroundColor = "#232730"
+textColor = "#e4e7ec"
+borderColor = "#353b46"
+blueColor = "#8daedb"
+greenColor = "#83b49a"
+redColor = "#df8b91"
+orangeColor = "#d4ad78"
+chartCategoricalColors = ["#8daedb", "#d4ad78", "#df8b91", "#83b49a"]
+dataframeHeaderBackgroundColor = "#232730"
+
+[theme.dark.sidebar]
+backgroundColor = "#1e222a"
+secondaryBackgroundColor = "#2b303a"

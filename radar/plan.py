@@ -25,6 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 import json
+import math
 import os
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -37,6 +38,7 @@ from radar import analytics
 # reason: both callers need the identical tolerance for ```json fencing.
 from radar.extract import (
     FIXTURES_ENV,
+    API_TIMEOUT_SECONDS,
     FIXTURES_DIR,
     MAX_ATTEMPTS,
     MAX_TOKENS,
@@ -162,7 +164,10 @@ def summarise_state(
         days_left = (due - today).days
         remaining = analytics.remaining_hours(assessment)
         weighting = assessment.get('weighting_pct')
-        risks = _risk_labels(assessment, today)
+        start = analytics.suggested_start_date(
+            assessment, [a for a in assessments if a is not assessment],
+            [load.week for load in week_loads])
+        risks = analytics.assess_risk(assessment, today=today, start_date=start).reasons
         lines.append(
             f'- {assessment["module_code"]} | {assessment["title"]}\n'
             f'    type={assessment.get("type", "other")} due={due.isoformat()} '
@@ -206,16 +211,16 @@ def validate_item(item: Any, index: int = 0) -> PlanItem:
 
     try:
         hours = float(item['hours'])
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         raise PlanError(f'{label} has non-numeric hours: {item["hours"]!r}') from None
     if not 0 < hours <= MAX_ITEM_HOURS:
         raise PlanError(f'{label} allocates {hours}h, outside 0-{MAX_ITEM_HOURS:g}')
 
     try:
         priority = int(item['priority'])
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         raise PlanError(f'{label} has non-integer priority: {item["priority"]!r}') from None
-    if priority < 1:
+    if isinstance(item['priority'], bool) or float(item['priority']) != priority or priority < 1:
         raise PlanError(f'{label} has priority {priority}, expected 1 or greater')
 
     return PlanItem(
@@ -282,11 +287,14 @@ def match_to_assessments(
             unmatched.append(f'{item.module_code} {item.title}')
             continue
         remaining = analytics.remaining_hours(assessment)
+        if remaining <= 0:
+            unmatched.append(f'{item.module_code} {item.title}')
+            continue
         matched.append(
             PlanItem(
                 module_code=str(assessment['module_code']),
                 title=str(assessment['title']),
-                hours=round(min(item.hours, remaining), 1) if remaining > 0 else item.hours,
+                hours=min(item.hours, remaining),
                 priority=item.priority,
                 reason=item.reason,
                 assessment_id=assessment.get('id'),
@@ -339,6 +347,8 @@ def plan_week(
 
     Nothing here writes to the database.
     """
+    if isinstance(hours_available, bool) or not math.isfinite(hours_available) or hours_available <= 0:
+        raise PlanError('hours_available must be a finite positive number')
     if fixtures_mode is None:
         fixtures_mode = os.environ.get(FIXTURES_ENV, '0').strip() == '1'
     if api_key is None:
@@ -356,7 +366,8 @@ def plan_week(
 
     if client is None:
         import anthropic
-        client = anthropic.Anthropic(api_key=api_key)
+        client = anthropic.Anthropic(
+            api_key=api_key, timeout=API_TIMEOUT_SECONDS, max_retries=0)
 
     prompt = build_prompt(
         summarise_state(assessments, week_loads, today, hours_available), hours_available)
