@@ -1,4 +1,5 @@
 from datetime import date, timedelta, timezone
+import sqlite3
 
 from icalendar import Calendar
 import pytest
@@ -129,3 +130,11 @@ def test_database_progress_to_export_integration(conn, assessment):
     event = events(export_calendar(db.list_assessments(conn)))[0]
     assert assessment['source_quote'] in str(event['description'])
     assert db.get_assessment(conn, aid)['progress_pct'] == 30
+
+
+def test_editing_fixture_cannot_make_it_exportable(conn, assessment):
+    aid = db.insert_assessment(conn, dict(assessment, source='fixture'))
+    with pytest.raises(sqlite3.IntegrityError, match='source is immutable'):
+        db.update_assessment(conn, aid, {'source': 'manual', 'title': 'Real Essay'})
+    db.update_assessment(conn, aid, {'title': 'Corrected Essay', 'due_date': '2026-12-05'})
+    assert events(export_calendar(db.list_assessments(conn))) == []
