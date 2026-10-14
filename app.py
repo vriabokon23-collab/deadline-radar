@@ -45,6 +45,7 @@ import radar.calendar as calendar
 import radar.analytics as analytics
 import radar.export as export
 import radar.extract as extract
+import radar.plan as plan
 
 # Re-exported so the upload flow and its tests can keep calling these unqualified;
 # the implementation lives in radar/extract.py, never in a Streamlit callback.
@@ -1000,6 +1001,127 @@ def render_progress_tracker(conn: sqlite3.Connection) -> None:
 
 
 # ---------------------------------------------------------------------------
+# UI View 6: Plan My Week
+# ---------------------------------------------------------------------------
+def render_plan_my_week(conn: sqlite3.Connection, today: date) -> None:
+    st.header("🗓️ Plan My Week")
+    st.caption(
+        "Claude reads your deadlines, progress and workload, then proposes where the "
+        "next week's study hours should go. A suggestion only — nothing here is saved."
+    )
+
+    assessments = db.list_assessments(conn)
+    outstanding = [a for a in assessments if a["status"] != "submitted"]
+    if not outstanding:
+        st.info("Nothing outstanding to plan. Add assessments or load demo data first.")
+        return
+
+    rows = [to_analytics_row(a) for a in assessments]
+    week_loads = analytics.weekly_workload(rows, get_all_term_weeks())
+
+    ctrl_col, btn_col = st.columns([3, 1])
+    with ctrl_col:
+        hours_available = st.slider(
+            "Study hours available over the next 7 days",
+            min_value=5.0, max_value=60.0, value=plan.DEFAULT_WEEKLY_HOURS, step=2.5,
+            format="%.1f",
+            help="Your realistic budget. The plan is asked to fit inside it.",
+            key="plan_budget",
+        )
+    with btn_col:
+        st.write("")
+        asked = st.button("🪄 Plan my week", type="primary", key="plan_run")
+
+    # Held in session state so a slider nudge or a rerun does not re-bill the API.
+    if asked:
+        with st.spinner("Asking Claude to prioritise your week..."):
+            try:
+                st.session_state.week_plan = plan.plan_week(
+                    rows, week_loads, today, hours_available=hours_available)
+            except plan.PlanError as exc:
+                st.session_state.week_plan = None
+                st.error(f"Could not build a plan: {exc}")
+
+    result = st.session_state.get("week_plan")
+    if result is None:
+        st.info("Set your budget and press **Plan my week**.")
+        return
+
+    if result.hours_available != hours_available:
+        st.caption(
+            f"Showing a plan built for a {result.hours_available:g}h week. "
+            "Press **Plan my week** again to replan for "
+            f"{hours_available:g}h."
+        )
+
+    # A fabricated plan must never read as Claude's view of this student's work.
+    if result.used_fixtures:
+        st.error(
+            "🧪 **THIS PLAN IS FIXTURE DATA, NOT CLAUDE'S ADVICE.** "
+            f"Reason: {result.reason}. It is a hand-written plan replayed offline, so the "
+            "ranking and the hours below were not reasoned from your actual deadlines. "
+            "Configure `ANTHROPIC_API_KEY` for a real plan."
+        )
+
+    if not result.items:
+        st.warning(
+            "The plan named nothing you are currently tracking."
+            + (f" It referred to: {', '.join(result.unmatched)}." if result.unmatched else "")
+        )
+        return
+
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Hours Planned", f"{result.total_hours:.1f} hrs", f"of {result.hours_available:g}h budget")
+    m2.metric("Assessments", f"{len(result.items)} items")
+    m3.metric(
+        "Over Budget", f"{result.over_budget_hours:.1f} hrs",
+        delta=None if not result.over_budget_hours else -result.over_budget_hours,
+        delta_color="inverse",
+        help="Hours the plan asks for beyond your stated budget. If this is large, "
+             "the workload genuinely does not fit and something has to give.",
+    )
+
+    if result.over_budget_hours:
+        st.warning(
+            f"⚠️ This plan needs {result.total_hours:.1f} hours but you have "
+            f"{result.hours_available:g}. The work does not fit in one week — consider an "
+            "extension request or dropping a lower-weighted component."
+        )
+
+    if result.unmatched:
+        st.info(
+            f"ℹ️ {len(result.unmatched)} suggestion(s) named work you are not tracking and "
+            f"were left out: {', '.join(result.unmatched)}."
+        )
+
+    st.divider()
+
+    for item in result.items:
+        row = next((r for r in rows if r["id"] == item.assessment_id), None)
+        with st.container(border=True):
+            head_col, hours_col = st.columns([4, 1])
+            with head_col:
+                st.markdown(f"### {item.priority}. {item.module_code} — {item.title}")
+                if row is not None:
+                    days_left = (row["due_date"] - today).days
+                    risk = analytics.assess_risk(row, today=today)
+                    st.caption(
+                        f"Due **{row['due_date'].strftime('%a, %d %b %Y')}** "
+                        f"({days_left} days) | Progress **{row['progress_pct']:.0f}%** | "
+                        f"Remaining **{analytics.remaining_hours(row):.1f}h**"
+                        + ("  ⚠️ **AT RISK**" if risk.at_risk else "")
+                    )
+            with hours_col:
+                st.metric("This week", f"{item.hours:.1f}h")
+            st.markdown(f"**Why:** {item.reason}")
+
+    st.caption(
+        "Nothing on this page has been written to your radar. Log the hours you "
+        "actually spend under **Progress Tracking**."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Main Application Shell & Navigation
 # ---------------------------------------------------------------------------
 def main() -> None:
@@ -1024,6 +1146,7 @@ def main() -> None:
             "📄 Upload & Review",
             "✏️ Manage Assessments",
             "⏱️ Progress Tracking",
+            "🗓️ Plan My Week",
         ],
         index=0,
         key="main_nav_radio",
@@ -1105,6 +1228,8 @@ def main() -> None:
         render_assessment_management(conn)
     elif nav_page == "⏱️ Progress Tracking":
         render_progress_tracker(conn)
+    elif nav_page == "🗓️ Plan My Week":
+        render_plan_my_week(conn, simulated_today)
 
 
 if __name__ == "__main__":

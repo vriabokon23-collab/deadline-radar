@@ -58,6 +58,12 @@ just confirmed; the dashboard, the heatmap and the risk flags all move
 together. Finish on **📥 Export Calendar (.ics)** in the sidebar and the
 whole term lands in your real calendar.
 
+**If there is time — 🗓️ Plan My Week.** Set a realistic hours budget and
+press *Plan my week*. Claude ranks what to work on and says why, citing the
+deadline, the risk flag or the crunch week. Nothing on that page is saved.
+Left out of the three minutes above on purpose: the rehearsed run is the
+MVP, and this is the bonus if the room is still with you.
+
 Offline rehearsal: `DEADLINE_RADAR_FIXTURES=1 .venv/bin/python -m streamlit
 run app.py`. Fixture-sourced rows are marked as such and are deliberately
 withheld from the `.ics`, so a demo never exports an assessment Claude did
@@ -119,4 +125,33 @@ and confidence when integrating extraction.
 
 UCL timetable week 1 starts 31 August 2026, verified against the
 [official academic calendar](https://www.ucl.ac.uk/srs/sites/srs/files/ucl_calendar_2026_27v2.pdf).
+
+### Weekly planning
+
+```python
+from radar import analytics, plan
+
+result = plan.plan_week(rows, week_loads, today, hours_available=20.0)
+for item in result.items:
+    print(item.priority, item.module_code, item.title, item.hours, item.reason)
+```
+
+`rows` are analytics-shaped assessments (`due_date` as a `date`) and
+`week_loads` come from `analytics.weekly_workload`. The call follows the same
+contract as extraction — one request, one retry, the model pinned in
+`radar.extract` — and falls back to `tests/fixtures/plan/week_plan.json` with
+the reason on `WeekPlan.reason` when there is no key, when
+`DEADLINE_RADAR_FIXTURES=1` is set, or when both attempts fail. Check
+`used_fixtures` before presenting a plan as Claude's advice.
+
+Claude names assessments by module code and title; `plan_week` resolves those
+against the real rows, caps each allocation at the hours actually left, and
+reports anything it could not match (or that is already submitted) on
+`unmatched` rather than failing. `total_hours` and `over_budget_hours`
+describe the fit — a plan that exceeds the budget is surfaced, not rejected,
+because the honest answer is sometimes that the work does not fit.
+
+`radar/plan.py` does not import `radar.db` and cannot write: a plan is a
+suggestion, and `summarise_state` is a pure function so the question of what
+the model is allowed to see is testable without a network call.
 
