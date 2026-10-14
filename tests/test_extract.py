@@ -475,3 +475,29 @@ def test_result_stamps_provenance_on_every_row():
     assert [r['source'] for r in ExtractionResult(rows, 'api').assessments] == ['extracted'] * 2
     rows = extract.validate_batch([VALID_ROW])
     assert ExtractionResult(rows, 'fixture').assessments[0]['source'] == 'fixture'
+
+@pytest.mark.parametrize('field,value', [
+    ('estimated_hours', float('nan')), ('estimated_hours', float('inf')),
+    ('word_count', 2.5), ('word_count', True), ('word_count', float('inf')),
+    ('due_time', '25:00'), ('due_time', '16:00+01:00'),
+])
+def test_extraction_rejects_values_that_cannot_be_saved(field, value):
+    with pytest.raises(ExtractionError):
+        extract.validate_row({**VALID_ROW, field: value})
+
+
+def test_sdk_retries_are_disabled_and_timeout_is_bounded(monkeypatch):
+    import anthropic
+    captured = {}
+    class Client:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.messages = self
+        def create(self, **kwargs):
+            return SimpleNamespace(content=[SimpleNamespace(text=json.dumps([VALID_ROW]))])
+    monkeypatch.setattr(anthropic, 'Anthropic', Client)
+    result = extract.extract_from_pdf(b'%PDF-1.4', 'test.pdf',
+                                      api_key='test-only', fixtures_mode=False)
+    assert result.source == 'api'
+    assert captured['max_retries'] == 0
+    assert captured['timeout'] == extract.API_TIMEOUT_SECONDS

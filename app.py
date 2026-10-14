@@ -470,19 +470,19 @@ def render_workload_heatmap(conn: sqlite3.Connection, today: date) -> None:
         return fig
 
     with t_tab_all:
-        st.plotly_chart(create_workload_figure(loads), use_container_width=True)
+        st.plotly_chart(create_workload_figure(loads), width="stretch")
 
     with t_tab_1:
         t1_loads = [l for l in loads if l.week.term == "T1"]
-        st.plotly_chart(create_workload_figure(t1_loads), use_container_width=True)
+        st.plotly_chart(create_workload_figure(t1_loads), width="stretch")
 
     with t_tab_2:
         t2_loads = [l for l in loads if l.week.term == "T2"]
-        st.plotly_chart(create_workload_figure(t2_loads), use_container_width=True)
+        st.plotly_chart(create_workload_figure(t2_loads), width="stretch")
 
     with t_tab_3:
         t3_loads = [l for l in loads if l.week.term == "T3"]
-        st.plotly_chart(create_workload_figure(t3_loads), use_container_width=True)
+        st.plotly_chart(create_workload_figure(t3_loads), width="stretch")
 
     st.divider()
 
@@ -562,7 +562,7 @@ def render_upload_and_review(conn: sqlite3.Connection) -> None:
             with st.spinner("Extracting assessments, resolving UCL term weeks, and proposing hours..."):
                 for uploaded in uploaded_files:
                     try:
-                        content = uploaded.read()
+                        content = uploaded.getvalue()
                         result = extract_from_pdf(content, uploaded.name)
                         if result.used_fixtures:
                             st.session_state.review_fixture_files.append(uploaded.name)
@@ -634,7 +634,7 @@ def render_upload_and_review(conn: sqlite3.Connection) -> None:
 
     edited_df = st.data_editor(
         df_queue,
-        use_container_width=True,
+        width="stretch",
         num_rows="dynamic",
         column_config={
             "module_code": st.column_config.TextColumn("Module Code", required=True),
@@ -677,75 +677,84 @@ def render_upload_and_review(conn: sqlite3.Connection) -> None:
             to_save = []
             errors = []
             for idx, r in edited_df.iterrows():
-                row_dict = r.to_dict()
-                # Required checks
-                m_code = str(row_dict.get("module_code") or "").strip()
-                t_title = str(row_dict.get("title") or "").strip()
-                d_date = str(row_dict.get("due_date") or "").strip()
-                a_type = str(row_dict.get("type") or "coursework").strip().lower()
-
-                if not m_code or not t_title or not d_date:
-                    errors.append(f"Row {idx + 1}: Module Code, Title, and Due Date are mandatory.")
-                    continue
                 try:
-                    date.fromisoformat(d_date)
-                except ValueError:
-                    errors.append(f"Row {idx + 1}: Invalid ISO date format '{d_date}'. Use YYYY-MM-DD.")
-                    continue
+                    row_dict = {k: None if pd.isna(v) else v for k, v in r.to_dict().items()}
+                    # Required checks
+                    m_code = str(row_dict.get("module_code") or "").strip()
+                    t_title = str(row_dict.get("title") or "").strip()
+                    d_date = str(row_dict.get("due_date") or "").strip()
+                    a_type = str(row_dict.get("type") or "coursework").strip().lower()
 
-                w_pct = row_dict.get("weighting_pct")
-                if pd.isna(w_pct) or w_pct is None or w_pct == "":
-                    w_pct = None
-                else:
-                    w_pct = float(w_pct)
+                    if not m_code or not t_title or not d_date:
+                        errors.append(f"Row {idx + 1}: Module Code, Title, and Due Date are mandatory.")
+                        continue
+                    try:
+                        date.fromisoformat(d_date)
+                    except ValueError:
+                        errors.append(f"Row {idx + 1}: Invalid ISO date format '{d_date}'. Use YYYY-MM-DD.")
+                        continue
 
-                w_cnt = row_dict.get("word_count")
-                if pd.isna(w_cnt) or w_cnt is None or w_cnt == "":
-                    w_cnt = None
-                else:
-                    w_cnt = int(w_cnt)
+                    w_pct = row_dict.get("weighting_pct")
+                    if pd.isna(w_pct) or w_pct is None or w_pct == "":
+                        w_pct = None
+                    else:
+                        w_pct = float(w_pct)
 
-                d_time = row_dict.get("due_time")
-                if pd.isna(d_time) or d_time is None or str(d_time).strip() == "":
-                    d_time = None
-                else:
-                    d_time = str(d_time).strip()
-                    if len(d_time) == 5:  # HH:MM -> HH:MM:SS
-                        d_time += ":00"
+                    w_cnt = row_dict.get("word_count")
+                    if pd.isna(w_cnt) or w_cnt is None or w_cnt == "":
+                        w_cnt = None
+                    else:
+                        if float(w_cnt) != int(w_cnt):
+                            raise ValueError("Word Count must be an integer")
+                        w_cnt = int(w_cnt)
 
-                row_source = _resolve_row_source(row_dict.get("source"))
+                    d_time = row_dict.get("due_time")
+                    if pd.isna(d_time) or d_time is None or str(d_time).strip() == "":
+                        d_time = None
+                    else:
+                        d_time = str(d_time).strip()
+                        if len(d_time) == 5:  # HH:MM -> HH:MM:SS
+                            d_time += ":00"
 
-                quote = str(row_dict.get("source_quote") or "").strip()
-                if row_source in db.MACHINE_SOURCES and not quote:
-                    errors.append(
-                        f"Row {idx + 1}: a '{row_source}' row must keep its source quote. "
-                        "Clear the quote only if you are entering the deadline yourself."
-                    )
-                    continue
+                    row_source = _resolve_row_source(row_dict.get("source"))
 
-                to_save.append({
-                    "module_code": m_code,
-                    "module_name": str(row_dict.get("module_name") or ""),
-                    "title": t_title,
-                    "type": a_type if a_type in ASSESSMENT_TYPES else "coursework",
-                    "due_date": d_date,
-                    "due_time": d_time,
-                    "weighting_pct": w_pct,
-                    "word_count": w_cnt,
-                    "estimated_hours": float(row_dict.get("estimated_hours") or 0.0),
-                    "status": "not_started",
-                    "progress_pct": 0.0,
-                    "source": row_source,
-                    "confidence": str(row_dict.get("confidence") or "high"),
-                    "source_quote": quote,
-                    "notes": str(row_dict.get("notes") or ""),
-                })
+                    quote = str(row_dict.get("source_quote") or "").strip()
+                    if row_source in db.MACHINE_SOURCES and not quote:
+                        errors.append(
+                            f"Row {idx + 1}: a '{row_source}' row must keep its source quote. "
+                            "Clear the quote only if you are entering the deadline yourself."
+                        )
+                        continue
+
+                    to_save.append({
+                        "module_code": m_code,
+                        "module_name": str(row_dict.get("module_name") or ""),
+                        "title": t_title,
+                        "type": a_type if a_type in ASSESSMENT_TYPES else "coursework",
+                        "due_date": d_date,
+                        "due_time": d_time,
+                        "weighting_pct": w_pct,
+                        "word_count": w_cnt,
+                        "estimated_hours": float(row_dict.get("estimated_hours") or 0.0),
+                        "status": "not_started",
+                        "progress_pct": 0.0,
+                        "source": row_source,
+                        "confidence": str(row_dict.get("confidence") or "high"),
+                        "source_quote": quote,
+                        "notes": str(row_dict.get("notes") or ""),
+                    })
+                except (ValueError, TypeError, OverflowError) as exc:
+                    errors.append(f"Row {idx + 1}: {exc}")
 
             if errors:
                 for e in errors:
                     st.error(e)
             elif to_save:
-                inserted_ids = db.insert_assessments(conn, to_save)
+                try:
+                    inserted_ids = db.insert_assessments(conn, to_save)
+                except (ValueError, sqlite3.Error) as exc:
+                    st.error(f"Nothing was saved. Correct the review entries and retry: {exc}")
+                    return
                 fixture_saved = sum(1 for r in to_save if r["source"] == "fixture")
                 st.session_state.review_queue = []
                 st.session_state.review_fixture_files = []
@@ -958,7 +967,7 @@ def render_progress_tracker(conn: sqlite3.Connection) -> None:
         return
 
     # Assessment picker
-    options = {f"[{a['module_code']}] {a['title']} ({a['progress_pct']:.0f}%)": a["id"] for a in assessments}
+    options = {f"{_assessment_label(a)} ({a['progress_pct']:.0f}%)": a["id"] for a in assessments}
     sel_label = st.selectbox("Select Assessment to Log Progress For", options=list(options.keys()))
     sel_id = options[sel_label]
     current = db.get_assessment(conn, sel_id)
@@ -979,7 +988,7 @@ def render_progress_tracker(conn: sqlite3.Connection) -> None:
 
     # Log new progress session
     st.subheader("Log New Work Session")
-    with st.form("log_progress_form"):
+    with st.form(f"log_progress_form_{sel_id}"):
         col1, col2 = st.columns(2)
         with col1:
             hours_spent = st.number_input("Hours spent this session *", min_value=0.25, max_value=80.0, value=2.0, step=0.5)
@@ -992,9 +1001,8 @@ def render_progress_tracker(conn: sqlite3.Connection) -> None:
                 value=min(100.0, float(current["progress_pct"]) + 10.0),
                 step=5.0
             )
-            mark_submitted = False
-            if new_progress >= 100.0:
-                mark_submitted = st.checkbox("Mark assessment status as 'Submitted' ✅", value=True)
+            mark_submitted = st.checkbox("Mark assessment status as 'Submitted' ✅", value=False)
+            st.caption("Select this only when you have handed in the assessment.")
 
         submitted = st.form_submit_button("💾 Record Work Session", type="primary")
         if submitted:
@@ -1031,7 +1039,7 @@ def render_progress_tracker(conn: sqlite3.Connection) -> None:
         })
         st.dataframe(
             df_hist[["Logged At (UTC)", "Hours Spent", "Progress After %", "Note / Accomplishment"]],
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -1069,6 +1077,11 @@ def render_plan_my_week(conn: sqlite3.Connection, today: date) -> None:
     with btn_col:
         st.write("")
         asked = st.button("🪄 Plan my week", type="primary", key="plan_run")
+
+    plan_context = (today, repr(rows))
+    if st.session_state.get("week_plan_context") != plan_context:
+        st.session_state.week_plan = None
+        st.session_state.week_plan_context = plan_context
 
     # Held in session state so a slider nudge or a rerun does not re-bill the API.
     if asked:
@@ -1174,102 +1187,106 @@ def main() -> None:
 
     conn = get_connection()
 
-    # Sidebar Navigation & Settings
-    st.sidebar.title("🎯 Deadline Radar")
-    st.sidebar.caption("Claude Campus Hackathon — UCL Assessment Tracker")
+    try:
+        # Sidebar Navigation & Settings
+        st.sidebar.title("🎯 Deadline Radar")
+        st.sidebar.caption("Claude Campus Hackathon — UCL Assessment Tracker")
 
-    nav_page = st.sidebar.radio(
-        "Navigation",
-        [
-            "📊 Dashboard",
-            "📈 Workload Heatmap",
-            "📄 Upload & Review",
-            "✏️ Manage Assessments",
-            "⏱️ Progress Tracking",
-            "🗓️ Plan My Week",
-        ],
-        index=0,
-        key="main_nav_radio",
-    )
+        nav_page = st.sidebar.radio(
+            "Navigation",
+            [
+                "📊 Dashboard",
+                "📈 Workload Heatmap",
+                "📄 Upload & Review",
+                "✏️ Manage Assessments",
+                "⏱️ Progress Tracking",
+                "🗓️ Plan My Week",
+            ],
+            index=0,
+            key="main_nav_radio",
+        )
 
-    st.sidebar.divider()
+        st.sidebar.divider()
 
-    # Calendar Reference Date Switcher
-    st.sidebar.subheader("📅 Academic Simulation Date")
-    simulated_today = st.sidebar.date_input(
-        "Reference Date ('Today')",
-        value=REFERENCE_TODAY,
-        help="Simulate today's date to evaluate crunch weeks and risk thresholds dynamically.",
-        key="simulated_today_picker",
-    )
+        # Calendar Reference Date Switcher
+        st.sidebar.subheader("📅 Academic Simulation Date")
+        simulated_today = st.sidebar.date_input(
+            "Reference Date ('Today')",
+            value=REFERENCE_TODAY,
+            help="Simulate today's date to evaluate crunch weeks and risk thresholds dynamically.",
+            key="simulated_today_picker",
+        )
 
-    st.sidebar.divider()
+        st.sidebar.divider()
 
-    # Export & Data Utilities
-    st.sidebar.subheader("🛠️ Quick Actions")
-    assessments = db.list_assessments(conn)
+        # Export & Data Utilities
+        st.sidebar.subheader("🛠️ Quick Actions")
+        assessments = db.list_assessments(conn)
 
-    exportable, fabricated = export.split_fabricated(assessments)
+        exportable, fabricated = export.split_fabricated(assessments)
 
-    if exportable:
-        try:
-            ics_bytes = export.export_calendar(exportable)
-            st.sidebar.download_button(
-                label="📥 Export Calendar (.ics)",
-                data=ics_bytes,
-                file_name="deadline-radar.ics",
-                mime="text/calendar",
-                help="Export real deadlines to Google Calendar, Apple Calendar, or "
-                     "Outlook. Fabricated fixture rows are never exported.",
-            )
-        except Exception as exc:
-            st.sidebar.caption(f"ICS Export unavailable: {exc}")
-        if fabricated:
+        if exportable:
+            try:
+                ics_bytes = export.export_calendar(exportable)
+                st.sidebar.download_button(
+                    label="📥 Export Calendar (.ics)",
+                    data=ics_bytes,
+                    file_name="deadline-radar.ics",
+                    mime="text/calendar",
+                    help="Export real deadlines to Google Calendar, Apple Calendar, or "
+                         "Outlook. Fabricated fixture rows are never exported.",
+                )
+            except Exception as exc:
+                st.sidebar.caption(f"ICS Export unavailable: {exc}")
+            if fabricated:
+                st.sidebar.warning(
+                    f"🧪 The .ics holds {len(exportable)} real deadline(s) and leaves out "
+                    f"{len(fabricated)} fabricated fixture row(s). An imported calendar "
+                    "event cannot be recalled, so invented dates stay inside the app."
+                )
+        elif fabricated:
             st.sidebar.warning(
-                f"🧪 The .ics holds {len(exportable)} real deadline(s) and leaves out "
-                f"{len(fabricated)} fabricated fixture row(s). An imported calendar "
-                "event cannot be recalled, so invented dates stay inside the app."
+                f"🧪 Nothing to export: all {len(fabricated)} tracked assessment(s) are "
+                "fabricated fixture data, which never goes into your calendar. Configure "
+                "`ANTHROPIC_API_KEY`, re-extract your handbooks, then export."
             )
-    elif fabricated:
-        st.sidebar.warning(
-            f"🧪 Nothing to export: all {len(fabricated)} tracked assessment(s) are "
-            "fabricated fixture data, which never goes into your calendar. Configure "
-            "`ANTHROPIC_API_KEY`, re-extract your handbooks, then export."
-        )
 
-    if st.sidebar.button("🌱 Load Demo UCL Data", key="side_seed"):
-        count = seed_demo_data(conn)
-        st.sidebar.success(
-            f"Seeded {count} demo assessments. Re-seeding replaces them rather than "
-            "duplicating, and leaves your own assessments alone."
-        )
-        st.rerun()
+        if st.sidebar.button("🌱 Load Demo UCL Data", key="side_seed"):
+            count = seed_demo_data(conn)
+            st.sidebar.success(
+                f"Seeded {count} demo assessments. Re-seeding replaces them rather than "
+                "duplicating, and leaves your own assessments alone."
+            )
+            st.rerun()
 
-    if st.sidebar.button("🧹 Remove Demo Data Only", key="side_clear_demo"):
-        removed = clear_demo_data(conn)
-        st.sidebar.info(f"Removed {removed} demo assessment(s). Your own rows are untouched.")
-        st.rerun()
+        if st.sidebar.button("🧹 Remove Demo Data Only", key="side_clear_demo"):
+            removed = clear_demo_data(conn)
+            st.sidebar.info(f"Removed {removed} demo assessment(s). Your own rows are untouched.")
+            st.rerun()
 
-    if st.sidebar.button("🗑️ Reset All Data", key="side_reset"):
-        conn.execute("DELETE FROM progress_log")
-        conn.execute("DELETE FROM assessments")
-        conn.commit()
-        st.sidebar.info("All assessments and logs wiped.")
-        st.rerun()
+        confirm_reset = st.sidebar.checkbox("Confirm deleting all assessments and progress", key="confirm_reset")
+        if st.sidebar.button("🗑️ Reset All Data", key="side_reset", disabled=not confirm_reset):
+            conn.execute("DELETE FROM progress_log")
+            conn.execute("DELETE FROM assessments")
+            conn.commit()
+            st.sidebar.info("All assessments and logs wiped.")
+            st.rerun()
 
-    # Render selected view
-    if nav_page == "📊 Dashboard":
-        render_dashboard(conn, simulated_today)
-    elif nav_page == "📈 Workload Heatmap":
-        render_workload_heatmap(conn, simulated_today)
-    elif nav_page == "📄 Upload & Review":
-        render_upload_and_review(conn)
-    elif nav_page == "✏️ Manage Assessments":
-        render_assessment_management(conn)
-    elif nav_page == "⏱️ Progress Tracking":
-        render_progress_tracker(conn)
-    elif nav_page == "🗓️ Plan My Week":
-        render_plan_my_week(conn, simulated_today)
+        # Render selected view
+        if nav_page == "📊 Dashboard":
+            render_dashboard(conn, simulated_today)
+        elif nav_page == "📈 Workload Heatmap":
+            render_workload_heatmap(conn, simulated_today)
+        elif nav_page == "📄 Upload & Review":
+            render_upload_and_review(conn)
+        elif nav_page == "✏️ Manage Assessments":
+            render_assessment_management(conn)
+        elif nav_page == "⏱️ Progress Tracking":
+            render_progress_tracker(conn)
+        elif nav_page == "🗓️ Plan My Week":
+            render_plan_my_week(conn, simulated_today)
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":

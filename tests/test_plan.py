@@ -405,3 +405,36 @@ def test_planning_never_writes_to_the_database(seeded, rows, loads):
     plan.plan_week(rows, loads, TODAY, fixtures_mode=True, client=ForbiddenClient())
     plan.plan_week(rows, loads, TODAY, client=FakeClient(json.dumps([VALID_ITEM])))
     assert snapshot() == before
+
+@pytest.mark.parametrize('budget', [0, -1, float('nan'), float('inf')])
+def test_invalid_budget_is_rejected_before_api_work(budget):
+    with pytest.raises(PlanError, match='hours_available'):
+        plan.plan_week([], [], TODAY, hours_available=budget, client=ForbiddenClient())
+
+
+def test_completed_but_unsubmitted_work_gets_no_hours(rows):
+    target = next(r for r in rows if r['title'] == VALID_ITEM['title'])
+    target['progress_pct'] = 100
+    matched, unmatched = plan.match_to_assessments(plan.validate_batch([VALID_ITEM]), rows)
+    assert matched == []
+    assert unmatched == [f"{target['module_code']} {target['title']}"]
+
+
+def test_small_remaining_allocation_is_not_rounded_up(rows):
+    target = next(r for r in rows if r['title'] == VALID_ITEM['title'])
+    target['progress_pct'] = 99.9
+    matched, _ = plan.match_to_assessments(plan.validate_batch([VALID_ITEM]), rows)
+    assert 0 < matched[0].hours <= analytics.remaining_hours(target)
+
+
+def test_planner_uses_dashboard_start_dates(rows, loads):
+    state = plan.summarise_state(rows, loads, TODAY)
+    for row in rows:
+        if row['status'] == 'submitted':
+            continue
+        start = analytics.suggested_start_date(row, [r for r in rows if r is not row],
+                                               [load.week for load in loads])
+        risk = analytics.assess_risk(row, TODAY, start_date=start)
+        section = state.split(f"- {row['module_code']} | {row['title']}\n")[1].split('\n- ')[0]
+        for reason in risk.reasons:
+            assert reason in section

@@ -179,3 +179,35 @@ because the honest answer is sometimes that the work does not fit.
 suggestion, and `summarise_state` is a pure function so the question of what
 the model is allowed to see is testable without a network call.
 
+
+## Demo readiness checks
+
+Use a separate database for rehearsal so demo actions do not affect your own work:
+
+```sh
+RADAR_DB_PATH=/tmp/deadline-radar-demo.db DEADLINE_RADAR_FIXTURES=1 .venv/bin/python -m streamlit run app.py
+```
+
+The sidebar date is intentionally fixed to **16 October 2026** for the seeded
+story. Change it when tracking real work. Fixture files are hand-written synthetic
+responses, not captured API responses; their labels survive review and saving,
+and they are excluded from calendar export. The seeded demo rows are deliberately
+exportable, so import demo calendars only into a disposable calendar.
+
+Before presenting, rehearse upload → review → confirm → progress → dashboard →
+heatmap → export. The submission checkbox requires an explicit choice. Invalid
+review entries save nothing and keep the queue for correction. Resetting all data
+requires a separate confirmation checkbox. Plans are cleared when assessments,
+progress or the reference date change; changing the budget keeps the previous plan
+with a reminder to regenerate it.
+
+API requests have a 30-second timeout and no SDK retries; the application makes
+at most two attempts before visibly switching to fixtures. The pinned model stays
+`claude-sonnet-5-5`. A live call with the presentation account and an actual import
+into the intended calendar app still need rehearsal; automated tests use mocked
+API clients and parse exported calendar bytes without contacting either service.
+
+Known limitation: holiday deadlines are attributed to the preceding term week,
+and deadlines before the academic calendar are absent from workload buckets.
+The dashboard still lists them. Use in-term sample handbooks for the rehearsed
+heatmap story.

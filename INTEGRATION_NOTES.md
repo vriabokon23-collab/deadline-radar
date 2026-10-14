@@ -109,6 +109,13 @@ the `estimated_hours` proposal step in extraction, not for risk scoring.
 
 ## Dependency management caveat
 
+Hackathon reliability review (14 October 2026): the frontend now requires
+Streamlit 1.65+, matching the verified local runtime and its native upload tests.
+The planner uses the same backward-planned start dates as the dashboard, rather
+than the flat fallback when term weeks are supplied. SDK retries are disabled
+so extraction and planning each retain the application's two-attempt limit;
+requests use a 30-second timeout. Live account access is still a rehearsal check.
+
 `requirements.txt` pins are provisional major-version ranges, written without a real
 `pip install` against the live `anthropic` SDK. A1 owns settling the exact
 `claude-sonnet-5-5` vs. fallback model ID empirically — re-pin exact versions once

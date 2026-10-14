@@ -606,3 +606,75 @@ def test_progress_completion_submitted_workflow(memory_db):
     assert submitted_rec["status"] == "submitted"
 
 
+
+@pytest.mark.parametrize('changes', [{'due_time': '25:00'}, {'word_count': 2.5},
+                                     {'estimated_hours': -1}])
+def test_invalid_review_keeps_queue_and_database_unchanged(tmp_path, changes):
+    from streamlit.testing.v1 import AppTest
+    db_file = tmp_path / 'review.db'
+    at = AppTest.from_file(str(_CURRENT_DIR / 'app.py'), default_timeout=15)
+    at.session_state['db_path'] = str(db_file)
+    at.session_state['review_queue'] = [{
+        'module_code': 'TEST0001', 'title': 'Essay', 'type': 'essay',
+        'due_date': '2026-12-04', 'source': 'manual', 'estimated_hours': 20,
+        **changes,
+    }]
+    at.run()
+    at.sidebar.radio(key='main_nav_radio').set_value('📄 Upload & Review').run()
+    next(b for b in at.button if 'Confirm & Save' in b.label).click().run()
+    assert not at.exception
+    assert at.error
+    assert len(at.session_state['review_queue']) == 1
+    conn = app.db.connect(db_file)
+    try:
+        assert app.db.list_assessments(conn) == []
+    finally:
+        conn.close()
+
+
+def test_progress_picker_preserves_duplicates_and_submission_is_explicit(tmp_path):
+    from streamlit.testing.v1 import AppTest
+    db_file = tmp_path / 'progress.db'
+    conn = app.db.connect(db_file)
+    data = {'module_code': 'TEST0001', 'title': 'Essay', 'type': 'essay',
+            'due_date': '2026-12-04', 'estimated_hours': 20}
+    ids = [app.db.insert_assessment(conn, data) for _ in range(2)]
+    conn.close()
+    at = AppTest.from_file(str(_CURRENT_DIR / 'app.py'), default_timeout=15)
+    at.session_state['db_path'] = str(db_file)
+    at.run()
+    assert at.sidebar.button(key='side_reset').disabled
+    at.sidebar.radio(key='main_nav_radio').set_value('⏱️ Progress Tracking').run()
+    assert len(at.selectbox[0].options) == 2
+    at.slider[0].set_value(100)
+    next(c for c in at.checkbox if 'Submitted' in c.label).check()
+    next(b for b in at.button if 'Record Work Session' in b.label).click().run()
+    assert not at.exception
+    conn = app.db.connect(db_file)
+    try:
+        assert app.db.get_assessment(conn, ids[0])['status'] == 'submitted'
+        assert app.db.get_assessment(conn, ids[1])['progress_pct'] == 0
+    finally:
+        conn.close()
+
+
+def test_plan_is_invalidated_when_progress_changes(tmp_path, monkeypatch):
+    from streamlit.testing.v1 import AppTest
+    monkeypatch.setenv('DEADLINE_RADAR_FIXTURES', '1')
+    db_file = tmp_path / 'plan.db'
+    conn = app.db.connect(db_file)
+    app.seed_demo_data(conn)
+    target = app.db.list_assessments(conn)[0]['id']
+    conn.close()
+    at = AppTest.from_file(str(_CURRENT_DIR / 'app.py'), default_timeout=15)
+    at.session_state['db_path'] = str(db_file)
+    at.run()
+    at.sidebar.radio(key='main_nav_radio').set_value('🗓️ Plan My Week').run()
+    at.button(key='plan_run').click().run()
+    assert at.session_state['week_plan'] is not None
+    conn = app.db.connect(db_file)
+    app.db.log_progress(conn, target, 1, 40)
+    conn.close()
+    at.run()
+    assert not at.exception
+    assert at.session_state['week_plan'] is None
