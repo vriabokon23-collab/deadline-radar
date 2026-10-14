@@ -161,6 +161,12 @@ def test_default_start_date_backs_off_by_estimated_weeks():
     assert start == due - timedelta(weeks=2)
 
 
+def test_default_start_date_with_zero_hours_per_week_is_the_due_date():
+    """A zero weekly budget can't back-plan anything; don't divide by zero."""
+    due = date(2026, 11, 20)
+    assert default_start_date(due, estimated_hours=20.0, hours_per_week=0.0) == due
+
+
 # --- suggested_start_date ----------------------------------------------------
 
 # Term 1 weeks used below, for reading the expected dates off quickly:
@@ -287,6 +293,16 @@ def test_an_assessment_with_no_estimated_hours_needs_no_run_up():
     assert start == DUE_IN_WEEK_10
 
 
+def test_suggested_start_date_with_zero_hours_per_week_is_the_due_date():
+    start = suggested_start_date(
+        make_assessment(due_date=DUE_IN_WEEK_10, estimated_hours=20.0),
+        others=[],
+        term_weeks=term1_weeks(),
+        hours_per_week=0.0,
+    )
+    assert start == DUE_IN_WEEK_10
+
+
 def test_a_crowded_term_can_flag_work_the_flat_estimate_calls_healthy():
     """The point of feeding this into assess_risk: 10 hours is not 10 hours.
 
@@ -335,6 +351,22 @@ def test_week_containing_identifies_reading_week():
 def test_week_containing_returns_none_before_term_start():
     weeks = term1_weeks()
     assert week_containing(date(2026, 9, 1), weeks) is None
+
+
+def test_week_containing_attributes_inter_term_gap_to_the_earlier_term():
+    """Documented gap behaviour (INTEGRATION_NOTES.md #4): a due date that falls
+
+    in a break between terms has no week of its own, so it lands on the last
+    modeled week of the term before it rather than being reported as unbucketed.
+    """
+    t1_last = TermWeek(term="T1", week_number=12, start_date=date(2026, 12, 14))
+    t2_first = TermWeek(term="T2", week_number=1, start_date=date(2027, 1, 11))
+    weeks = [t1_last, t2_first]
+
+    during_winter_break = date(2026, 12, 25)
+    found = week_containing(during_winter_break, weeks)
+
+    assert found is t1_last
 
 
 def test_weekly_workload_buckets_remaining_hours_per_week():
