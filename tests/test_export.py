@@ -138,3 +138,12 @@ def test_editing_fixture_cannot_make_it_exportable(conn, assessment):
         db.update_assessment(conn, aid, {'source': 'manual', 'title': 'Real Essay'})
     db.update_assessment(conn, aid, {'title': 'Corrected Essay', 'due_date': '2026-12-05'})
     assert events(export_calendar(db.list_assessments(conn))) == []
+
+
+def test_new_deadline_does_not_inherit_deleted_calendar_uid(conn, assessment):
+    aid = db.insert_assessment(conn, assessment)
+    original = events(export_calendar(db.list_assessments(conn)))[0]
+    db.delete_assessment(conn, aid)
+    db.insert_assessment(conn, dict(assessment, title='Different deadline'))
+    replacement = events(export_calendar(db.list_assessments(conn)))[0]
+    assert replacement['uid'] != original['uid']

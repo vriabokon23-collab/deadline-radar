@@ -27,7 +27,7 @@ FIELDS = frozenset(('module_code', 'module_name', 'title', 'type', 'due_date',
 
 # Shared by SCHEMA and _migrate_source_check so the rebuilt table cannot drift.
 ASSESSMENTS_COLUMNS = """
-    id INTEGER PRIMARY KEY,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     module_code TEXT NOT NULL CHECK(length(trim(module_code)) > 0),
     module_name TEXT NOT NULL DEFAULT '',
     title TEXT NOT NULL CHECK(length(trim(title)) > 0),
@@ -78,17 +78,19 @@ _MIGRATED_COLUMNS = ('id', 'module_code', 'module_name', 'title', 'type', 'due_d
 
 
 def _migrate_source_check(conn: sqlite3.Connection) -> bool:
-    """Widen a pre-existing table's source CHECK to admit 'fixture'.
+    """Upgrade source provenance and prevent persisted assessment ID reuse.
 
     Databases created before fixture provenance existed carry the old two-value
     CHECK, and ``CREATE TABLE IF NOT EXISTS`` never revisits it. SQLite cannot
     ALTER a CHECK, so rebuild the table; otherwise saving a fixture row fails
-    with an IntegrityError instead of being labelled.
+    with an IntegrityError instead of being labelled. Rebuild newer tables too
+    if they lack AUTOINCREMENT: calendar UIDs use assessment IDs, so deleting
+    a row must never let a different deadline inherit its exported identity.
     """
     row = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'assessments'"
     ).fetchone()
-    if row is None or "'fixture'" in row[0]:
+    if row is None or ("'fixture'" in row[0] and 'AUTOINCREMENT' in row[0].upper()):
         return False
 
     # Dropping assessments would cascade into progress_log while FKs are on.

@@ -354,3 +354,40 @@ def test_nullable_fields_and_memory_database(assessment):
         assert row['due_time'] == '16:00:00'
     finally:
         conn.close()
+
+
+def test_deleted_assessment_ids_are_not_reused_after_reopening(tmp_path, assessment):
+    path = tmp_path / 'identities.db'
+    conn = db.connect(path)
+    first_id = db.insert_assessment(conn, assessment)
+    db.delete_assessment(conn, first_id)
+    conn.close()
+    conn = db.connect(path)
+    try:
+        second_id = db.insert_assessment(conn, assessment)
+        assert second_id > first_id
+        db.delete_assessment(conn, second_id)
+        db.init_db(conn)
+        assert db.insert_assessment(conn, assessment) > second_id
+    finally:
+        conn.close()
+
+
+def test_fixture_capable_database_migrates_non_reusable_ids(tmp_path, assessment):
+    path = tmp_path / 'fixture-era.db'
+    legacy = sqlite3.connect(path)
+    legacy.executescript(db.SCHEMA.replace('PRIMARY KEY AUTOINCREMENT', 'PRIMARY KEY'))
+    legacy.row_factory = sqlite3.Row
+    aid = db.insert_assessment(legacy, dict(assessment, source='fixture'))
+    db.log_progress(legacy, aid, 2, 10, 'Preserve this history')
+    legacy.close()
+    conn = db.connect(path)
+    try:
+        assert db.get_assessment(conn, aid)['source'] == 'fixture'
+        assert db.get_progress_history(conn, aid)[0]['note'] == 'Preserve this history'
+        assert conn.execute('PRAGMA foreign_key_check').fetchall() == []
+        db.delete_assessment(conn, aid)
+        assert db.insert_assessment(conn, assessment) > aid
+        assert db._migrate_source_check(conn) is False
+    finally:
+        conn.close()
