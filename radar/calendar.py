@@ -89,7 +89,8 @@ def resolve_week_reference(
     """Resolve supported week phrases while retaining the original quote.
 
     Bare weeks default to Term 1 with low confidence. Unspecified schemes
-    prefer calendar weeks, with low confidence even if alternatives coincide.
+    prefer calendar weeks, falling back to timetable numbering only when the
+    calendar week is out of range, with low confidence for either assumption.
     Explicit timetable weeks infer their term from the academic-year anchor.
     Unsupported or conflicting references raise rather than invent a date.
     """
@@ -142,7 +143,16 @@ def resolve_week_reference(
             raise ValueError('timetable week is outside teaching terms')
         term = mapped[0]
     term = term or 1
-    monday = week_to_date(term, week, chosen_scheme or 'calendar')
+    assumed_scheme = 'calendar'
+    try:
+        monday = week_to_date(term, week, chosen_scheme or assumed_scheme)
+    except ValueError:
+        if chosen_scheme is not None:
+            raise
+        # A handbook may omit "UCL timetable" before an academic-year week
+        # number. Keep the requested term constraint and disclose the fallback.
+        assumed_scheme = 'timetable'
+        monday = week_to_date(term, week, assumed_scheme)
     alternatives = []
     if chosen_scheme is None:
         for candidate_scheme in ('teaching', 'timetable'):
@@ -155,7 +165,7 @@ def resolve_week_reference(
     ambiguous = assumed_term or chosen_scheme is None
     reason = 'Explicit term and numbering scheme'
     if ambiguous:
-        reason = 'Assumed calendar numbering' if chosen_scheme is None else 'Explicit numbering'
+        reason = f'Assumed {assumed_scheme} numbering' if chosen_scheme is None else 'Explicit numbering'
         if assumed_term:
             reason += '; assumed Term 1 because no term was supplied'
         reason += '; check against the handbook'
