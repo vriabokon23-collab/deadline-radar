@@ -1,7 +1,15 @@
 """Claude extraction: handbook PDF in, validated assessment rows out.
 
-This module never imports Streamlit. Callers inspect the returned
-ExtractionResult and render their own messaging.
+One API call per PDF, with exactly one retry on an unusable response and no
+third attempt. The model is asked for JSON only and is never asked to do date
+arithmetic: it reports the phrase it found ("Term 1 Week 10") and
+``radar.calendar`` maps that to a date, so week-number reasoning stays in tested
+code. When the calendar is unsure, the assessment inherits that low confidence.
+
+Nothing here touches Streamlit. Fixture fallbacks are reported through the
+returned :class:`ExtractionResult` so the caller can surface them, and every row
+carries a ``source`` of ``extracted`` or ``fixture`` from the moment it is built.
+A fabricated row must never reach the database claiming to be a real extraction.
 """
 
 from __future__ import annotations
@@ -12,267 +20,325 @@ from datetime import date
 import json
 import os
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Iterable, Mapping
 
 from radar import calendar
 from radar.db import ASSESSMENT_TYPES, CONFIDENCES
 
 MODEL = 'claude-sonnet-5-5'
-FALLBACK_MODELS = ('claude-3-7-sonnet-20250219', 'claude-3-5-sonnet-20241022')
-MAX_ATTEMPTS = 2
+MAX_ATTEMPTS = 2  # the first call plus the single retry CLAUDE.md allows
 MAX_TOKENS = 4096
 
-# Stands in when a week reference resolves to nothing; the row is forced to low
-# confidence so the user reconciles it against source_quote before confirming.
-UNRESOLVED_DUE_DATE = '2026-11-30'
+FIXTURES_ENV = 'DEADLINE_RADAR_FIXTURES'
+FIXTURES_DIR = Path(__file__).resolve().parents[1] / 'tests' / 'fixtures'
+DEFAULT_FIXTURE = '_default'
 
-DEFAULT_MODULE_CODE = 'UCL0001'
-DEFAULT_TITLE = 'Assessment'
-DEFAULT_TYPE = 'coursework'
-DEFAULT_CONFIDENCE = 'medium'
-DEFAULT_ESTIMATED_HOURS = 20.0
+REQUIRED_KEYS = ('module_code', 'title', 'type', 'due_date', 'confidence', 'source_quote')
+
+# A date the model gave us but neither ISO parsing nor the calendar could pin
+# down. The row still needs a date because `assessments.due_date` is NOT NULL,
+# so it gets this placeholder, confidence `low`, and a note saying so. It is
+# meant to be obviously wrong: the review gate exists so the student fixes it.
+UNRESOLVED_DUE_DATE = '2026-11-30'
+UNRESOLVED_NOTE = 'Due date could not be resolved from {phrase!r} - placeholder, correct before confirming.'
+
+# Rough hours when the model omits `estimated_hours` entirely. The student
+# overrides this in the review editor; it only has to be defensible, not right.
+BASE_HOURS_BY_TYPE = {
+    'essay': 25.0, 'exam': 30.0, 'coursework': 20.0, 'presentation': 12.0,
+    'problem_set': 10.0, 'group_project': 30.0, 'other': 15.0,
+}
+WORDS_PER_HOUR = 100.0
+MAX_ESTIMATED_HOURS = 120.0
 
 PROMPT = (
-    "You are an assessment extraction assistant for UCL students.\n"
-    "Read the uploaded handbook PDF and extract ALL assessments, coursework, exams, presentations, "
-    "and problem sets described in the document.\n\n"
-    "Return ONLY a valid JSON array of objects. Each object must have these exact keys:\n"
-    '- "module_code": string (e.g. "COMP0002")\n'
-    '- "module_name": string (e.g. "Software Engineering")\n'
-    '- "title": string (e.g. "Coursework 1: Architecture Specification")\n'
-    '- "type": one of "essay", "exam", "coursework", "presentation", "problem_set", "group_project", "other"\n'
-    '- "due_date": ISO date "YYYY-MM-DD" or explicit term week phrase like "Term 1 Week 10" or "Week 6"\n'
-    '- "due_time": local time "HH:MM:SS" or null\n'
-    '- "weighting_pct": number (0-100) or null\n'
-    '- "word_count": integer or null\n'
-    '- "estimated_hours": realistic float hours required (propose based on type, weighting and word count)\n'
-    '- "confidence": "high", "medium", or "low"\n'
-    '- "source_quote": verbatim quote from the text where the deadline was found\n'
-    '- "notes": string notes\n\n'
-    "Do NOT include markdown formatting or commentary. Output raw JSON only."
+    'You are an assessment extraction assistant for UCL students.\n'
+    'Read the uploaded handbook PDF and extract EVERY assessment, coursework, exam, '
+    'presentation and problem set it describes, including any mentioned only in '
+    'passing in a paragraph rather than listed in an assessment table.\n\n'
+    'Return ONLY a valid JSON array of objects. Each object must have these exact keys:\n'
+    '- "module_code": string, e.g. "COMP0002"\n'
+    '- "module_name": string, e.g. "Software Engineering"\n'
+    '- "title": string, e.g. "Coursework 1: Architecture Specification"\n'
+    '- "type": one of "essay", "exam", "coursework", "presentation", "problem_set", '
+    '"group_project", "other"\n'
+    '- "due_date": an ISO date "YYYY-MM-DD" if the handbook gives one, otherwise the '
+    'week phrase exactly as written, e.g. "Term 1 Week 10" or "Week 6". Do NOT convert '
+    'a week number into a date yourself; quote the phrase and we will resolve it.\n'
+    '- "due_time": local time "HH:MM:SS" or null if the handbook gives no time\n'
+    '- "weighting_pct": number 0-100, or null if the handbook does not state one\n'
+    '- "word_count": integer, or null if the handbook does not state one\n'
+    '- "estimated_hours": realistic float hours of work, proposed from the type, '
+    'weighting and word count\n'
+    '- "confidence": "high" if the handbook is explicit, "medium" if you inferred part '
+    'of it, "low" if the date is genuinely unclear from the document\n'
+    '- "source_quote": a verbatim quote from the PDF containing the deadline. Required; '
+    'never invent or paraphrase it.\n'
+    '- "notes": string, may be empty\n\n'
+    'Do not guess a weighting or word count that is not in the document - use null. '
+    'Do not include markdown formatting or commentary. Output raw JSON only.'
 )
 
 
-@dataclass(frozen=True)
+class ExtractionError(ValueError):
+    """The model's response could not be used: bad JSON, or a row failing schema."""
+
+
+@dataclass
 class ExtractionResult:
-    """Extracted rows plus provenance, so the UI can warn on fixture replay."""
+    """Outcome of one handbook extraction, including how the rows were produced."""
 
     assessments: list[dict[str, Any]]
-    source: Literal['api', 'fixture']
-    error: str | None = None
+    source: str  # "api" or "fixture"
+    reason: str | None = None
+
+    def __post_init__(self) -> None:
+        # Stamp provenance on every row here so no return path can produce rows
+        # that disagree with the result, and so the label survives the review
+        # queue into the database rather than being reassigned at save time.
+        row_source = 'fixture' if self.used_fixtures else 'extracted'
+        for row in self.assessments:
+            row['source'] = row_source
 
     @property
     def used_fixtures(self) -> bool:
         return self.source == 'fixture'
 
 
+def propose_estimated_hours(
+    assessment_type: str,
+    weighting_pct: float | None,
+    word_count: int | None,
+) -> float:
+    """Fallback workload estimate for a row the model left without one."""
+    if word_count:
+        hours = word_count / WORDS_PER_HOUR
+    else:
+        hours = BASE_HOURS_BY_TYPE.get(assessment_type, 20.0)
+    if weighting_pct:
+        # A component worth 40% of a module should not be estimated at 10 hours
+        # just because it has no word count.
+        hours = max(hours, weighting_pct * 0.5)
+    return round(min(hours, MAX_ESTIMATED_HOURS), 1)
+
+
+def _resolve_due_date(raw: str, confidence: str) -> tuple[str, str, str | None]:
+    """Map a model-supplied date or week phrase to (iso_date, confidence, note).
+
+    An ISO date is taken at face value. Anything else goes to the calendar, and a
+    low-confidence resolution drags the assessment's confidence down with it. A
+    phrase the calendar cannot parse is quarantined rather than rejected, because
+    a handbook genuinely can leave a date unresolvable.
+    """
+    try:
+        return date.fromisoformat(raw).isoformat(), confidence, None
+    except ValueError:
+        pass
+
+    try:
+        resolution = calendar.resolve_week_reference(raw)
+    except (ValueError, KeyError):
+        return UNRESOLVED_DUE_DATE, 'low', UNRESOLVED_NOTE.format(phrase=raw)
+
+    if resolution.confidence == 'low':
+        confidence = 'low'
+    return resolution.date.isoformat(), confidence, None
+
+
+def _optional_number(item: Mapping[str, Any], key: str, cast, label: str):
+    value = item.get(key)
+    if value is None or value == '':
+        return None
+    try:
+        return cast(value)
+    except (TypeError, ValueError):
+        raise ExtractionError(f'{label} {key!r} is not a number: {value!r}') from None
+
+
+def validate_row(item: Any, index: int = 0) -> dict[str, Any]:
+    """Validate and normalise one extracted assessment, or raise ExtractionError."""
+    label = f'assessment {index}'
+    if not isinstance(item, Mapping):
+        raise ExtractionError(f'{label} is {type(item).__name__}, expected an object')
+
+    missing = [k for k in REQUIRED_KEYS if not str(item.get(k) or '').strip()]
+    if missing:
+        raise ExtractionError(f'{label} is missing required field(s): {", ".join(missing)}')
+
+    assessment_type = str(item['type']).strip().lower()
+    if assessment_type not in ASSESSMENT_TYPES:
+        raise ExtractionError(f'{label} has unknown type {assessment_type!r}')
+
+    confidence = str(item['confidence']).strip().lower()
+    if confidence not in CONFIDENCES:
+        raise ExtractionError(f'{label} has unknown confidence {confidence!r}')
+
+    weighting = _optional_number(item, 'weighting_pct', float, label)
+    if weighting is not None and not 0 <= weighting <= 100:
+        raise ExtractionError(f'{label} has weighting_pct outside 0-100: {weighting}')
+
+    words = _optional_number(item, 'word_count', int, label)
+    if words is not None and words < 0:
+        raise ExtractionError(f'{label} has a negative word_count: {words}')
+
+    due_date, confidence, note = _resolve_due_date(
+        str(item['due_date']).strip(), confidence)
+
+    hours = _optional_number(item, 'estimated_hours', float, label)
+    if hours is None or hours <= 0:
+        hours = propose_estimated_hours(assessment_type, weighting, words)
+
+    notes = str(item.get('notes') or '').strip()
+    if note:
+        notes = f'{note} {notes}'.strip()
+
+    due_time = item.get('due_time')
+    return {
+        'module_code': str(item['module_code']).strip(),
+        'module_name': str(item.get('module_name') or '').strip(),
+        'title': str(item['title']).strip(),
+        'type': assessment_type,
+        'due_date': due_date,
+        'due_time': str(due_time).strip() if due_time else None,
+        'weighting_pct': weighting,
+        'word_count': words,
+        'estimated_hours': hours,
+        'confidence': confidence,
+        'source_quote': str(item['source_quote']).strip(),
+        'notes': notes,
+    }
+
+
+def validate_batch(items: Any) -> list[dict[str, Any]]:
+    """Validate a whole extracted payload, or raise ExtractionError."""
+    if not isinstance(items, list):
+        raise ExtractionError(
+            f'expected a JSON array of assessments, got {type(items).__name__}')
+    return [validate_row(item, i) for i, item in enumerate(items)]
+
+
+def _strip_code_fence(text: str) -> str:
+    """Unwrap ```json ... ``` fencing the model sometimes adds despite the prompt."""
+    stripped = text.strip()
+    if not stripped.startswith('```'):
+        return stripped
+    body = stripped.split('```')
+    if len(body) < 2:
+        return stripped
+    inner = body[1]
+    if inner.lower().startswith('json'):
+        inner = inner[4:]
+    return inner.strip()
+
+
+def parse_response(text: str) -> list[dict[str, Any]]:
+    """Turn raw model text into validated rows, or raise ExtractionError."""
+    try:
+        payload = json.loads(_strip_code_fence(text))
+    except json.JSONDecodeError as err:
+        raise ExtractionError(f'response was not valid JSON: {err}') from err
+    return validate_batch(payload)
+
+
+def _call_model(client: Any, file_bytes: bytes) -> str:
+    """Send the PDF as a document content block and return the raw reply text."""
+    pdf_b64 = base64.b64encode(file_bytes).decode('utf-8')
+    response = client.messages.create(
+        model=MODEL,
+        max_tokens=MAX_TOKENS,
+        messages=[{
+            'role': 'user',
+            'content': [
+                {
+                    'type': 'document',
+                    'source': {
+                        'type': 'base64',
+                        'media_type': 'application/pdf',
+                        'data': pdf_b64,
+                    },
+                },
+                {'type': 'text', 'text': PROMPT},
+            ],
+        }],
+    )
+    return response.content[0].text
+
+
+def fixture_path(filename: str) -> Path:
+    """The fixture file standing in for `filename`, by module code in the name."""
+    lower = Path(filename).stem.lower()
+    for candidate in sorted(FIXTURES_DIR.glob('*.json')):
+        if candidate.stem.startswith('_'):
+            continue
+        code = candidate.stem.split('_')[0]
+        if code and code in lower:
+            return candidate
+    return FIXTURES_DIR / f'{DEFAULT_FIXTURE}.json'
+
+
+def load_fixture(filename: str) -> list[dict[str, Any]]:
+    """Replay a saved response for `filename` through the real validation path.
+
+    Fixtures are validated exactly like a live response, so a malformed fixture
+    fails loudly in the test suite rather than quietly feeding the demo rows the
+    schema would have rejected.
+    """
+    path = fixture_path(filename)
+    try:
+        raw = json.loads(path.read_text(encoding='utf-8'))
+    except FileNotFoundError:
+        raise ExtractionError(f'no fixture available for {filename!r} at {path}') from None
+    except json.JSONDecodeError as err:
+        raise ExtractionError(f'fixture {path.name} is not valid JSON: {err}') from err
+
+    # Accept a bare array (a response saved verbatim) or an object wrapping one,
+    # so a captured response can be dropped in beside the hand-written fixtures.
+    if isinstance(raw, Mapping):
+        raw = raw.get('assessments')
+    return validate_batch(raw)
+
+
 def extract_from_pdf(
     file_bytes: bytes,
     filename: str,
     *,
-    api_key: str | None = None,
-    client: Any | None = None,
+    client: Any = None,
     fixtures_mode: bool | None = None,
+    api_key: str | None = None,
 ) -> ExtractionResult:
-    """Extract assessments from a handbook PDF, falling back to fixture replay.
+    """Extract assessments from one handbook PDF.
 
-    Passing `client` injects a prepared Anthropic client and bypasses the
-    environment checks, which is how the tests exercise the API path.
+    Falls back to replaying a fixture when there is no API key, when
+    ``DEADLINE_RADAR_FIXTURES=1`` is set, or when both attempts fail. The caller
+    gets the reason on the result so it can tell the student the rows are
+    fabricated; every fallback row is stamped ``source = fixture``.
     """
     if fixtures_mode is None:
-        fixtures_mode = os.environ.get('DEADLINE_RADAR_FIXTURES', '0').strip() == '1'
+        fixtures_mode = os.environ.get(FIXTURES_ENV, '0').strip() == '1'
     if api_key is None:
         api_key = os.environ.get('ANTHROPIC_API_KEY', '').strip()
 
+    if fixtures_mode:
+        return ExtractionResult(
+            load_fixture(filename), 'fixture',
+            f'{FIXTURES_ENV}=1 forces offline fixture mode')
+
+    if client is None and not api_key:
+        return ExtractionResult(
+            load_fixture(filename), 'fixture',
+            'ANTHROPIC_API_KEY is not set, so Claude was never called')
+
     if client is None:
-        if fixtures_mode or not api_key:
-            return ExtractionResult(generate_fixture_extractions(filename), 'fixture')
         import anthropic
         client = anthropic.Anthropic(api_key=api_key)
 
-    message = [{
-        'role': 'user',
-        'content': [
-            {
-                'type': 'document',
-                'source': {
-                    'type': 'base64',
-                    'media_type': 'application/pdf',
-                    'data': base64.b64encode(file_bytes).decode('utf-8'),
-                },
-            },
-            {'type': 'text', 'text': PROMPT},
-        ],
-    }]
-
     last_error: Exception | None = None
-    for model in (MODEL, *FALLBACK_MODELS):
-        for _ in range(MAX_ATTEMPTS):
-            try:
-                response = client.messages.create(
-                    model=model, max_tokens=MAX_TOKENS, messages=message,
-                )
-                data = json.loads(_strip_code_fence(response.content[0].text.strip()))
-                if isinstance(data, list):
-                    return ExtractionResult(normalize_extracted_batch(data), 'api')
-            except Exception as err:
-                last_error = err
+    for _attempt in range(MAX_ATTEMPTS):
+        try:
+            return ExtractionResult(parse_response(_call_model(client, file_bytes)), 'api')
+        except Exception as err:  # noqa: BLE001 - any failure costs us one attempt
+            last_error = err
 
-    reason = str(last_error) if last_error else 'response was not a JSON array'
-    return ExtractionResult(generate_fixture_extractions(filename), 'fixture', reason)
-
-
-def _strip_code_fence(text: str) -> str:
-    """Unwrap a ```json fenced block, which models emit despite instructions."""
-    if not text.startswith('```'):
-        return text
-    inner = text.split('```')[1]
-    return inner[4:].strip() if inner.startswith('json') else inner
-
-
-def normalize_extracted_batch(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Coerce raw model output into rows matching the assessments schema."""
-    return [_normalize_one(item) for item in items]
-
-
-def _normalize_one(item: dict[str, Any]) -> dict[str, Any]:
-    raw_date = str(item.get('due_date', '')).strip()
-    confidence = str(item.get('confidence', 'high')).lower()
-    if confidence not in CONFIDENCES:
-        confidence = DEFAULT_CONFIDENCE
-
-    due_date, confidence = _resolve_due_date(raw_date, confidence)
-
-    assessment_type = str(item.get('type', DEFAULT_TYPE)).lower()
-    if assessment_type not in ASSESSMENT_TYPES:
-        assessment_type = DEFAULT_TYPE
-
-    weighting = item.get('weighting_pct')
-    word_count = item.get('word_count')
-    return {
-        'module_code': str(item.get('module_code') or DEFAULT_MODULE_CODE).strip(),
-        'module_name': str(item.get('module_name') or '').strip(),
-        'title': str(item.get('title') or DEFAULT_TITLE).strip(),
-        'type': assessment_type,
-        'due_date': due_date,
-        'due_time': item.get('due_time'),
-        'weighting_pct': float(weighting) if weighting is not None else None,
-        'word_count': int(word_count) if word_count is not None else None,
-        'estimated_hours': float(item.get('estimated_hours') or DEFAULT_ESTIMATED_HOURS),
-        'confidence': confidence,
-        'source_quote': str(item.get('source_quote') or '').strip(),
-        'notes': str(item.get('notes') or '').strip(),
-    }
-
-
-def _resolve_due_date(raw_date: str, confidence: str) -> tuple[str, str]:
-    """Map an ISO date or a handbook week phrase onto a concrete due date."""
-    try:
-        date.fromisoformat(raw_date)
-        return raw_date, confidence
-    except ValueError:
-        pass
-    try:
-        resolution = calendar.resolve_week_reference(raw_date)
-    except Exception:
-        return UNRESOLVED_DUE_DATE, 'low'
-    return resolution.date.isoformat(), 'low' if resolution.confidence == 'low' else confidence
-
-
-def generate_fixture_extractions(filename: str) -> list[dict[str, Any]]:
-    """Provide realistic offline extractions keyed off the handbook filename."""
-    lower = filename.lower()
-    if 'algo' in lower or 'comp0004' in lower:
-        return [
-            {
-                'module_code': 'COMP0004',
-                'module_name': 'Algorithms & Data Structures',
-                'title': 'Problem Set 1',
-                'type': 'problem_set',
-                'due_date': '2026-10-30',
-                'due_time': '16:00:00',
-                'weighting_pct': 15.0,
-                'word_count': None,
-                'estimated_hours': 15.0,
-                'confidence': 'high',
-                'source_quote': 'Problem Set 1 is due on Friday 30 October 2026 at 4pm.',
-                'notes': 'Submit via Moodle',
-            },
-            {
-                'module_code': 'COMP0004',
-                'module_name': 'Algorithms & Data Structures',
-                'title': 'Problem Set 2',
-                'type': 'problem_set',
-                'due_date': '2026-11-30',
-                'due_time': '16:00:00',
-                'weighting_pct': 15.0,
-                'word_count': None,
-                'estimated_hours': 20.0,
-                'confidence': 'low',
-                'source_quote': 'Problem Set 2 is due in Term 1 Week 10.',
-                'notes': 'Low confidence due to calendar vs teaching week ambiguity.',
-            },
-        ]
-    if 'eng' in lower or 'se' in lower or 'comp0002' in lower:
-        return [
-            {
-                'module_code': 'COMP0002',
-                'module_name': 'Software Engineering',
-                'title': 'Coursework 1: Architecture Specification',
-                'type': 'coursework',
-                'due_date': '2026-11-16',
-                'due_time': '16:00:00',
-                'weighting_pct': 30.0,
-                'word_count': 2500,
-                'estimated_hours': 25.0,
-                'confidence': 'high',
-                'source_quote': 'Coursework 1 must be submitted by Monday 16 November at 16:00.',
-                'notes': 'Individual assignment',
-            },
-            {
-                'module_code': 'COMP0002',
-                'module_name': 'Software Engineering',
-                'title': 'Final Project & Team Review',
-                'type': 'group_project',
-                'due_date': '2026-12-14',
-                'due_time': '17:00:00',
-                'weighting_pct': 70.0,
-                'word_count': 5000,
-                'estimated_hours': 50.0,
-                'confidence': 'high',
-                'source_quote': 'Final deliverables due on Monday 14 December by 5pm.',
-                'notes': 'Requires video demo link',
-            },
-        ]
-    stem = Path(filename).stem.replace('_', ' ').upper()
-    module_code = stem[:8] if len(stem) >= 8 else 'COMP0099'
-    return [
-        {
-            'module_code': module_code,
-            'module_name': stem,
-            'title': 'Midterm Coursework Assignment',
-            'type': 'coursework',
-            'due_date': '2026-11-20',
-            'due_time': '16:00:00',
-            'weighting_pct': 40.0,
-            'word_count': 2000,
-            'estimated_hours': 22.0,
-            'confidence': 'high',
-            'source_quote': f'Extracted from {filename}: Midterm assessment due Friday 20 Nov.',
-            'notes': 'Standard submission rules apply',
-        },
-        {
-            'module_code': module_code,
-            'module_name': stem,
-            'title': 'Final Term Assessment',
-            'type': 'exam',
-            'due_date': '2026-12-11',
-            'due_time': '14:00:00',
-            'weighting_pct': 60.0,
-            'word_count': None,
-            'estimated_hours': 30.0,
-            'confidence': 'low',
-            'source_quote': f'Extracted from {filename}: End-of-term assessment in Week 11.',
-            'notes': 'Check whether reading week is included',
-        },
-    ]
+    return ExtractionResult(
+        load_fixture(filename), 'fixture',
+        f'every Claude attempt failed ({last_error})')

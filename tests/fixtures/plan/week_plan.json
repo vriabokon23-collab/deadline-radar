@@ -1,0 +1,26 @@
+{
+  "_comment": "Offline replay for radar.plan. Hand-written, not captured from the API: tuned to sample_data/seed.py at 2026-10-16 with a 20h budget, so the offline plan names the same two at-risk rows the dashboard flags. Lives in its own subdirectory so extract.fixture_path can never match it to an uploaded PDF.",
+  "plan": [
+    {
+      "module_code": "COMP0004",
+      "title": "Problem Set 1 (Graph Proofs)",
+      "hours": 10.0,
+      "priority": 1,
+      "reason": "Due in 7 days at 5% progress and flagged at risk on both counts, so it is the only piece of work that is already behind rather than merely large."
+    },
+    {
+      "module_code": "COMP0010",
+      "title": "Interpreter Implementation Project",
+      "hours": 6.0,
+      "priority": 2,
+      "reason": "70 hours of untouched work against a deadline in the 30 November crunch week, which is already carrying three deadlines, so it has to start now to fit at all."
+    },
+    {
+      "module_code": "COMP0010",
+      "title": "Lab Exercises 1-4",
+      "hours": 4.0,
+      "priority": 3,
+      "reason": "Half done and due on 30 October, and four hours finishes it outright rather than leaving a third small deadline to carry into November."
+    }
+  ]
+}

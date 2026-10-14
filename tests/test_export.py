@@ -4,7 +4,7 @@ from icalendar import Calendar
 import pytest
 
 from radar import db
-from radar.export import export_calendar
+from radar.export import export_calendar, split_fabricated
 
 
 def events(payload):
@@ -82,6 +82,45 @@ def test_duplicate_or_missing_ids_rejected(assessment):
         export_calendar([assessment])
     with pytest.raises(ValueError):
         export_calendar([dict(assessment, id=0)])
+
+
+def test_split_fabricated_partitions_on_source(assessment):
+    extracted = dict(assessment, id=1, source='extracted')
+    manual = dict(assessment, id=2, source='manual')
+    unlabelled = dict(assessment, id=3)
+    invented = dict(assessment, id=4, source='fixture')
+    genuine, fabricated = split_fabricated([extracted, manual, unlabelled, invented])
+    assert [row['id'] for row in genuine] == [1, 2, 3]
+    assert [row['id'] for row in fabricated] == [4]
+
+
+def test_fabricated_rows_are_not_exported(assessment):
+    real = dict(assessment, id=1, title='Real Essay', source='extracted')
+    invented = dict(assessment, id=2, title='Invented Essay', source='fixture')
+    payload = export_calendar([real, invented])
+    exported = events(payload)
+    assert len(exported) == 1
+    assert str(exported[0]['summary']) == 'COMP0001: Real Essay'
+    assert b'Invented Essay' not in payload
+    assert b'assessment-2@deadline-radar' not in payload
+
+
+def test_export_of_only_fabricated_rows_is_valid_but_empty(assessment):
+    payload = export_calendar([dict(assessment, id=1, source='fixture')])
+    parsed = Calendar.from_ical(payload)
+    assert parsed['version'] == '2.0'
+    assert parsed.walk('VEVENT') == []
+
+
+def test_fixture_row_from_database_is_excluded(conn, assessment):
+    real_id = db.insert_assessment(conn, dict(assessment, source='extracted'))
+    db.insert_assessment(conn, dict(assessment, title='Fabricated', source='fixture',
+                                    due_date='2026-12-11'))
+    rows = db.list_assessments(conn)
+    assert {row['source'] for row in rows} == {'extracted', 'fixture'}
+    exported = events(export_calendar(rows))
+    assert len(exported) == 1
+    assert str(exported[0]['uid']) == f'assessment-{real_id}@deadline-radar'
 
 
 def test_database_progress_to_export_integration(conn, assessment):

@@ -45,6 +45,13 @@ import radar.calendar as calendar
 import radar.analytics as analytics
 import radar.export as export
 import radar.extract as extract
+import radar.plan as plan
+
+# Re-exported so the upload flow and its tests can keep calling these unqualified;
+# the implementation lives in radar/extract.py, never in a Streamlit callback.
+from radar.extract import ExtractionResult, extract_from_pdf
+
+from sample_data.seed import clear_demo_data, seed_demo_data
 
 try:
     from dotenv import load_dotenv
@@ -56,11 +63,13 @@ except ImportError:
 # Constants & Configurations
 # ---------------------------------------------------------------------------
 DEFAULT_DB_FILE = Path(os.environ.get("RADAR_DB_PATH", _CURRENT_DIR / "data" / "radar.db"))
-REFERENCE_TODAY = date(2026, 10, 12)  # Hackathon week anchor
+# Demo day. sample_data/seed.py is tuned to this date, so move the two together.
+REFERENCE_TODAY = date(2026, 10, 16)
 
 ASSESSMENT_TYPES = list(db.ASSESSMENT_TYPES)
 STATUSES = list(db.STATUSES)
 CONFIDENCES = list(db.CONFIDENCES)
+SOURCES = list(db.SOURCES)
 
 
 def get_db_path() -> Path:
@@ -119,199 +128,21 @@ def get_all_term_weeks() -> list[analytics.TermWeek]:
     return sorted(weeks, key=lambda w: w.start_date)
 
 
-# ---------------------------------------------------------------------------
-# Demo Seed Data Generator
-# ---------------------------------------------------------------------------
-DEMO_ASSESSMENTS = [
-    {
-        "module_code": "COMP0004",
-        "module_name": "Algorithms & Data Structures",
-        "title": "Problem Set 1 (Graph Proofs)",
-        "type": "problem_set",
-        "due_date": "2026-10-23",
-        "due_time": "16:00:00",
-        "weighting_pct": 20.0,
-        "word_count": None,
-        "estimated_hours": 25.0,
-        "status": "in_progress",
-        "progress_pct": 5.0,
-        "source": "extracted",
-        "confidence": "high",
-        "source_quote": "Problem Set 1 is due on Friday 23 October 2026 at 4pm.",
-        "notes": "Proof-heavy assignment; behind schedule.",
-    },
-    {
-        "module_code": "COMP0008",
-        "module_name": "Formal Languages",
-        "title": "Automata & Grammars Midterm",
-        "type": "coursework",
-        "due_date": "2026-10-19",
-        "due_time": "16:00:00",
-        "weighting_pct": 25.0,
-        "word_count": 1500,
-        "estimated_hours": 15.0,
-        "status": "in_progress",
-        "progress_pct": 10.0,
-        "source": "manual",
-        "confidence": "high",
-        "source_quote": "Manual entry from module moodle",
-        "notes": "Due next week; insufficient time remaining.",
-    },
-    {
-        "module_code": "COMP0002",
-        "module_name": "Software Engineering",
-        "title": "Coursework 1: Architecture Specification",
-        "type": "coursework",
-        "due_date": "2026-11-16",
-        "due_time": "16:00:00",
-        "weighting_pct": 30.0,
-        "word_count": 2500,
-        "estimated_hours": 25.0,
-        "status": "in_progress",
-        "progress_pct": 60.0,
-        "source": "extracted",
-        "confidence": "high",
-        "source_quote": "Coursework 1 must be submitted by Monday 16 November at 16:00.",
-        "notes": "System design and UML diagrams.",
-    },
-    {
-        "module_code": "COMP0002",
-        "module_name": "Software Engineering",
-        "title": "Final Team Project & Peer Review",
-        "type": "group_project",
-        "due_date": "2026-12-14",
-        "due_time": "17:00:00",
-        "weighting_pct": 70.0,
-        "word_count": 5000,
-        "estimated_hours": 50.0,
-        "status": "in_progress",
-        "progress_pct": 20.0,
-        "source": "extracted",
-        "confidence": "high",
-        "source_quote": "Final group deliverables due on the last week of Term 1, Monday 14 December.",
-        "notes": "Web deployment and documentation.",
-    },
-    {
-        "module_code": "COMP0004",
-        "module_name": "Algorithms & Data Structures",
-        "title": "Problem Set 2 (Dynamic Programming)",
-        "type": "problem_set",
-        "due_date": "2026-11-30",
-        "due_time": "16:00:00",
-        "weighting_pct": 15.0,
-        "word_count": None,
-        "estimated_hours": 20.0,
-        "status": "not_started",
-        "progress_pct": 0.0,
-        "source": "extracted",
-        "confidence": "low",
-        "source_quote": "Problem Set 2 is due in Term 1 Week 10 (teaching schedule).",
-        "notes": "Ambiguous week reference in handbook; check reading week offset.",
-    },
-    {
-        "module_code": "COMP0010",
-        "module_name": "Principles of Programming",
-        "title": "Interpreter Implementation Project",
-        "type": "coursework",
-        "due_date": "2026-11-30",
-        "due_time": "12:00:00",
-        "weighting_pct": 40.0,
-        "word_count": 3000,
-        "estimated_hours": 35.0,
-        "status": "not_started",
-        "progress_pct": 0.0,
-        "source": "manual",
-        "confidence": "high",
-        "source_quote": "Manual entry from syllabus",
-        "notes": "Build abstract syntax tree and bytecode interpreter.",
-    },
-    {
-        "module_code": "ENGF0001",
-        "module_name": "Engineering Challenges",
-        "title": "Team Technical Report 1",
-        "type": "coursework",
-        "due_date": "2026-10-09",
-        "due_time": "16:00:00",
-        "weighting_pct": 30.0,
-        "word_count": 2000,
-        "estimated_hours": 18.0,
-        "status": "submitted",
-        "progress_pct": 100.0,
-        "source": "extracted",
-        "confidence": "high",
-        "source_quote": "Submission deadline: Friday 9 October 2026, 16:00.",
-        "notes": "Submitted ahead of deadline.",
-    },
-    {
-        "module_code": "COMP0012",
-        "module_name": "Operating Systems",
-        "title": "Concurrency Kernel Lab",
-        "type": "coursework",
-        "due_date": "2027-02-05",
-        "due_time": "16:00:00",
-        "weighting_pct": 35.0,
-        "word_count": None,
-        "estimated_hours": 25.0,
-        "status": "not_started",
-        "progress_pct": 0.0,
-        "source": "manual",
-        "confidence": "high",
-        "source_quote": "Term 2 Syllabus",
-        "notes": "Thread synchronization primitives.",
-    },
-    {
-        "module_code": "COMP0014",
-        "module_name": "Computer Architecture",
-        "title": "Final Written Examination",
-        "type": "exam",
-        "due_date": "2027-05-14",
-        "due_time": "10:00:00",
-        "weighting_pct": 80.0,
-        "word_count": None,
-        "estimated_hours": 45.0,
-        "status": "not_started",
-        "progress_pct": 0.0,
-        "source": "manual",
-        "confidence": "high",
-        "source_quote": "UCL Central Exam Timetable",
-        "notes": "Term 3 exam hall paper.",
-    },
-]
+def suggested_start_dates(
+    rows: list[dict], term_weeks: list[analytics.TermWeek]
+) -> dict[int, date]:
+    """Backward-planned start date per assessment id.
 
-
-def seed_demo_data(conn: sqlite3.Connection) -> int:
-    """Populate database with representative UCL data exhibiting crunch and risk."""
-    conn.execute("DELETE FROM progress_log")
-    conn.execute("DELETE FROM assessments")
-    ids = db.insert_assessments(conn, DEMO_ASSESSMENTS)
-
-    # Key-based lookup to avoid index mismatch
-    all_rows = db.list_assessments(conn)
-    by_key = {(r["module_code"], r["title"]): r["id"] for r in all_rows}
-
-    if ("COMP0004", "Problem Set 1 (Graph Proofs)") in by_key:
-        p1_id = by_key[("COMP0004", "Problem Set 1 (Graph Proofs)")]
-        db.log_progress(conn, p1_id, hours_spent=1.5, progress_pct_after=5.0, note="Solved Question 1 part a")
-
-    if ("COMP0008", "Automata & Grammars Midterm") in by_key:
-        p8_id = by_key[("COMP0008", "Automata & Grammars Midterm")]
-        db.log_progress(conn, p8_id, hours_spent=1.5, progress_pct_after=10.0, note="Reviewed DFA minimization")
-
-    if ("COMP0002", "Coursework 1: Architecture Specification") in by_key:
-        se1_id = by_key[("COMP0002", "Coursework 1: Architecture Specification")]
-        db.log_progress(conn, se1_id, hours_spent=5.0, progress_pct_after=30.0, note="Drafted system context diagrams")
-        db.log_progress(conn, se1_id, hours_spent=8.0, progress_pct_after=60.0, note="Wrote detailed component architecture")
-
-    if ("COMP0002", "Final Team Project & Peer Review") in by_key:
-        se2_id = by_key[("COMP0002", "Final Team Project & Peer Review")]
-        db.log_progress(conn, se2_id, hours_spent=10.0, progress_pct_after=20.0, note="Initial GitHub repo setup & scaffold")
-
-    if ("ENGF0001", "Team Technical Report 1") in by_key:
-        eng_id = by_key[("ENGF0001", "Team Technical Report 1")]
-        db.log_progress(conn, eng_id, hours_spent=6.0, progress_pct_after=40.0, note="First draft compiled")
-        db.log_progress(conn, eng_id, hours_spent=12.0, progress_pct_after=100.0, note="Final proofreading and Moodle submission")
-
-    return len(ids)
+    Each row is planned against every other row, so a week already carrying
+    deadlines offers less capacity and pushes its neighbours' start dates
+    earlier. Feeds `assess_risk`, which otherwise assumes an empty term.
+    """
+    return {
+        row["id"]: analytics.suggested_start_date(
+            row, [other for other in rows if other["id"] != row["id"]], term_weeks
+        )
+        for row in rows
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -340,12 +171,15 @@ def render_dashboard(conn: sqlite3.Connection, today: date) -> None:
     at_risk_count = 0
     overdue_count = 0
 
+    rows = [to_analytics_row(a) for a in assessments]
+    starts = suggested_start_dates(rows, get_all_term_weeks())
+
     enriched = []
-    for a in assessments:
-        ar = to_analytics_row(a)
+    for a, ar in zip(assessments, rows):
         due_d = ar["due_date"]
         days_left = (due_d - today).days
-        risk_res = analytics.assess_risk(ar, today=today)
+        suggested_start = starts[ar["id"]]
+        risk_res = analytics.assess_risk(ar, today=today, start_date=suggested_start)
 
         if a["status"] != "submitted":
             if 0 <= days_left <= 14:
@@ -362,12 +196,37 @@ def render_dashboard(conn: sqlite3.Connection, today: date) -> None:
             "days_left": days_left,
             "risk": risk_res,
             "remaining_hours": analytics.remaining_hours(ar),
+            "suggested_start": suggested_start,
         })
+
+    # Fabricated rows look exactly like real ones once saved, so say so up front.
+    fixture_rows = [a for a in assessments if a.get("source") == "fixture"]
+    if fixture_rows:
+        modules = ", ".join(sorted({f"{a['module_code']} {a['title']}" for a in fixture_rows}))
+        st.error(
+            f"🧪 **{len(fixture_rows)} tracked assessment(s) are fabricated fixture data, "
+            "not real extractions.** Claude never read a handbook for these, so their dates, "
+            f"weightings and quotes are invented: {modules}. Delete them under "
+            "**Manage Assessments** once `ANTHROPIC_API_KEY` is configured."
+        )
+
+    # Risk is scored the same way whatever a row's provenance, so say when a flag
+    # rests on invented estimated_hours rather than hiding the row from the count.
+    fixture_at_risk = sum(
+        1 for item in enriched
+        if item["raw"].get("source") == "fixture"
+        and item["risk"].at_risk
+        and item["raw"]["status"] != "submitted"
+    )
+    risk_help = (
+        f"{fixture_at_risk} of these flag(s) belong to fabricated fixture rows, scored "
+        "from invented hours and dates." if fixture_at_risk else None
+    )
 
     # Top KPI Metrics Cards
     m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("Total Tracked", f"{total_count} items")
-    m2.metric("At Risk ⚠️", f"{at_risk_count} items", delta=-at_risk_count if at_risk_count else None, delta_color="inverse")
+    m2.metric("At Risk ⚠️", f"{at_risk_count} items", delta=-at_risk_count if at_risk_count else None, delta_color="inverse", help=risk_help)
     m3.metric("Due in 14 Days", f"{next_14_days_count} items")
     m4.metric("Overdue 🚨", f"{overdue_count} items")
     m5.metric("Submitted ✅", f"{submitted_count} items")
@@ -425,6 +284,8 @@ def render_dashboard(conn: sqlite3.Connection, today: date) -> None:
                 mod_title = f"**{a['module_code']}** — {a['title']}"
                 if a.get("module_name"):
                     mod_title += f" *({a['module_name']})*"
+                if a.get("source") == "fixture":
+                    mod_title += " `🧪 FIXTURE`"
                 st.markdown(f"### {mod_title}")
                 st.caption(
                     f"Type: **{a['type'].replace('_', ' ').title()}** | "
@@ -445,15 +306,30 @@ def render_dashboard(conn: sqlite3.Connection, today: date) -> None:
                     time_str = f" at {a['due_time']}" if a.get("due_time") else ""
                     st.info(f"⏳ Due in **{days_left} days**\n({due_d.strftime('%a, %d %b')}{time_str})")
 
+            # Backward-planned start date. Shown for every outstanding row, not just
+            # flagged ones, because the useful version of this advice arrives early.
+            start_d = item["suggested_start"]
+            if a["status"] != "submitted":
+                days_since = (today - start_d).days
+                if days_since > 0:
+                    st.caption(
+                        f"🗓️ Work back from the deadline and this needed to start "
+                        f"**{start_d.strftime('%a, %d %b')}** — {days_since} days ago, "
+                        "once the other deadlines in those weeks are accounted for."
+                    )
+                elif days_since == 0:
+                    st.caption("🗓️ Working back from the deadline, this starts **this week**.")
+                else:
+                    st.caption(
+                        f"🗓️ Working back from the deadline, this can wait until "
+                        f"**{start_d.strftime('%a, %d %b')}** (in {-days_since} days)."
+                    )
+
             # Risk warning banner
             if risk.at_risk and a["status"] != "submitted":
                 reason_msgs = []
                 if analytics.REASON_PROGRESS_BEHIND in risk.reasons:
-                    exp_prog = analytics.expected_progress_pct(
-                        today,
-                        analytics.default_start_date(due_d, a["estimated_hours"]),
-                        due_d
-                    )
+                    exp_prog = analytics.expected_progress_pct(today, start_d, due_d)
                     reason_msgs.append(
                         f"Actual progress ({a['progress_pct']:.0f}%) trails expected progress "
                         f"({exp_prog:.0f}%) by more than 20 percentage points."
@@ -476,6 +352,11 @@ def render_dashboard(conn: sqlite3.Connection, today: date) -> None:
             with action_col:
                 if a.get("source_quote"):
                     with st.popover("📖 Handbook Source Quote"):
+                        if a.get("source") == "fixture":
+                            st.error(
+                                "🧪 This quote is fabricated fixture text, not from your "
+                                "handbook. Claude was never called for this row."
+                            )
                         st.markdown(f"> *\"{a['source_quote']}\"*")
                         st.caption(f"Extraction confidence: **{a['confidence'].upper()}**")
 
@@ -496,6 +377,16 @@ def render_workload_heatmap(conn: sqlite3.Connection, today: date) -> None:
     analytics_rows = [to_analytics_row(a) for a in assessments]
     loads = analytics.weekly_workload(analytics_rows, term_weeks)
 
+    # Fabricated hours stay in the totals but must not pass for real crunch.
+    fabricated_total = sum(l.fabricated_hours for l in loads)
+    if fabricated_total > 0:
+        st.warning(
+            f"🧪 **{fabricated_total:.1f}h of the workload below is fabricated fixture "
+            "data**, not estimated from any handbook Claude read. Hatched bars contain "
+            "invented hours, and hovering a bar breaks down how many. Delete those rows "
+            "under **Manage Assessments** for a true picture."
+        )
+
     # Term selection filter
     t_tab_all, t_tab_1, t_tab_2, t_tab_3 = st.tabs(["Full Academic Year", "Term 1", "Term 2", "Term 3"])
 
@@ -503,6 +394,7 @@ def render_workload_heatmap(conn: sqlite3.Connection, today: date) -> None:
         x_labels = []
         y_hours = []
         colors = []
+        patterns = []
         hover_texts = []
 
         for item in filtered_loads:
@@ -510,8 +402,11 @@ def render_workload_heatmap(conn: sqlite3.Connection, today: date) -> None:
             label = f"{w.term} W{w.week_number}<br>{w.start_date.strftime('%d %b')}"
             if w.is_reading_week:
                 label += "<br>*(Reading)*"
+            if item.fabricated_hours > 0:
+                label += "<br>🧪"
             x_labels.append(label)
             y_hours.append(item.remaining_hours)
+            patterns.append("/" if item.fabricated_hours > 0 else "")
 
             # Color classification
             if w.is_reading_week:
@@ -527,19 +422,29 @@ def render_workload_heatmap(conn: sqlite3.Connection, today: date) -> None:
             colors.append(c)
 
             rw_str = " (Reading Week)" if w.is_reading_week else ""
-            hover_texts.append(
+            hover = (
                 f"<b>{w.term} Week {w.week_number}{rw_str}</b><br>"
                 f"Commencing: {w.start_date.strftime('%A, %d %B %Y')}<br>"
                 f"Remaining Work: <b>{item.remaining_hours:.1f} hours</b><br>"
                 f"Deadlines Due: <b>{item.assessment_count}</b>"
             )
+            if item.fabricated_hours > 0:
+                hover += (
+                    f"<br>🧪 Fabricated: <b>{item.fabricated_hours:.1f} hours</b> "
+                    f"across <b>{item.fabricated_count}</b> fixture row(s)"
+                )
+            hover_texts.append(hover)
 
         fig = go.Figure(
             data=[
                 go.Bar(
                     x=x_labels,
                     y=y_hours,
-                    marker=dict(color=colors, line=dict(color="#333333", width=1)),
+                    marker=dict(
+                        color=colors,
+                        pattern=dict(shape=patterns, solidity=0.35),
+                        line=dict(color="#333333", width=1),
+                    ),
                     hovertext=hover_texts,
                     hoverinfo="text",
                 )
@@ -587,10 +492,20 @@ def render_workload_heatmap(conn: sqlite3.Connection, today: date) -> None:
         st.subheader("🚨 Identified Crunch Weeks")
         for cw in crunch_weeks:
             w = cw.week
-            st.error(
+            message = (
                 f"**{w.term} Week {w.week_number}** (Commencing {w.start_date.strftime('%d %B %Y')}): "
                 f"**{cw.remaining_hours:.1f} remaining hours** across **{cw.assessment_count} deadlines**."
             )
+            if cw.fabricated_hours > 0:
+                genuine_hours = cw.remaining_hours - cw.fabricated_hours
+                message += (
+                    f" 🧪 Includes **{cw.fabricated_hours:.1f}h of fabricated fixture "
+                    f"data** — only {genuine_hours:.1f}h of this crunch is real"
+                )
+                if genuine_hours < 20.0:
+                    message += ", which would not be a crunch week on its own"
+                message += "."
+            st.error(message)
     else:
         st.success("✅ No extreme crunch weeks (>20h) detected with current progress levels.")
 
@@ -598,12 +513,40 @@ def render_workload_heatmap(conn: sqlite3.Connection, today: date) -> None:
 # ---------------------------------------------------------------------------
 # UI View 3: PDF Upload & Editable Review Table (The Review Gate)
 # ---------------------------------------------------------------------------
+def _resolve_row_source(value: Any) -> str:
+    """Trust a review row's own provenance, defaulting to manual.
+
+    Rows appended in the data editor arrive with no source at all, which makes
+    them the student's own entry; never promote an unknown value to 'extracted'.
+    """
+    if pd.isna(value):
+        return "manual"
+    candidate = str(value).strip()
+    return candidate if candidate in SOURCES else "manual"
+
+
+def _queue_extraction_notice(level: str, message: str) -> None:
+    """Hold a notice in session state so it survives the st.rerun() that follows."""
+    st.session_state.setdefault("extraction_notices", []).append((level, message))
+
+
+def _drain_extraction_notices() -> None:
+    """Render notices queued before the last rerun, then clear them."""
+    notices = st.session_state.pop("extraction_notices", [])
+    for level, message in notices:
+        getattr(st, level)(message)
+
+
 def render_upload_and_review(conn: sqlite3.Connection) -> None:
     st.header("📄 Handbook PDF Extraction & Review")
     st.caption("Extract deadlines from module handbooks. Confirm or edit rows before committing to the database.")
 
     if "review_queue" not in st.session_state:
         st.session_state.review_queue = []
+    if "review_fixture_files" not in st.session_state:
+        st.session_state.review_fixture_files = []
+
+    _drain_extraction_notices()
 
     # File Uploader
     uploaded_files = st.file_uploader(
@@ -620,22 +563,26 @@ def render_upload_and_review(conn: sqlite3.Connection) -> None:
                 for uploaded in uploaded_files:
                     try:
                         content = uploaded.read()
-                        result = extract.extract_from_pdf(content, uploaded.name)
-                        if result.used_fixtures and result.error:
-                            st.warning(
-                                f"Live API call encountered an issue ({result.error}). "
-                                f"Falling back to fixture replay for {uploaded.name}."
+                        result = extract_from_pdf(content, uploaded.name)
+                        if result.used_fixtures:
+                            st.session_state.review_fixture_files.append(uploaded.name)
+                            _queue_extraction_notice(
+                                "warning",
+                                f"⚠️ **{uploaded.name}: these rows are fabricated demo fixtures, "
+                                f"not a real extraction.** Claude did not read this PDF — "
+                                f"{result.reason}. Do not trust these dates.",
                             )
-                        elif result.used_fixtures:
-                            st.info(f"ℹ️ Using offline extraction fixture mode for {uploaded.name}.")
                         extracted_items.extend(result.assessments)
                     except Exception as exc:
-                        st.error(f"Failed to extract {uploaded.name}: {exc}")
+                        _queue_extraction_notice("error", f"Failed to extract {uploaded.name}: {exc}")
 
             if extracted_items:
                 st.session_state.review_queue.extend(extracted_items)
-                st.success(f"Extracted {len(extracted_items)} candidate assessments! Review them below.")
-                st.rerun()
+                _queue_extraction_notice(
+                    "success",
+                    f"Extracted {len(extracted_items)} candidate assessments! Review them below.",
+                )
+            st.rerun()
 
     st.divider()
 
@@ -647,6 +594,16 @@ def render_upload_and_review(conn: sqlite3.Connection) -> None:
 
     st.subheader(f"Editable Review Gate ({len(queue)} candidate assessments)")
     st.warning("⚠️ **Nothing is saved to the database until you click 'Confirm & Save' below.**")
+
+    # Persistent provenance badge: the banner above is one-shot, the queue is not.
+    fixture_files = st.session_state.review_fixture_files
+    if fixture_files:
+        st.error(
+            "🧪 **FIXTURE DATA IN THIS QUEUE — NOT EXTRACTED FROM YOUR PDFs.** "
+            f"Rows sourced from fixture replay for: {', '.join(fixture_files)}. "
+            "Every date, weighting and quote below is invented. Discard the queue and fix "
+            "`ANTHROPIC_API_KEY` before relying on any of it."
+        )
 
     # High / Low confidence summary
     low_conf_count = sum(1 for r in queue if r.get("confidence") == "low")
@@ -668,6 +625,7 @@ def render_upload_and_review(conn: sqlite3.Connection) -> None:
         ("word_count", None),
         ("estimated_hours", 20.0),
         ("confidence", "high"),
+        ("source", "manual"),
         ("source_quote", ""),
         ("notes", ""),
     ]:
@@ -689,6 +647,12 @@ def render_upload_and_review(conn: sqlite3.Connection) -> None:
             "word_count": st.column_config.NumberColumn("Word Count", min_value=0),
             "estimated_hours": st.column_config.NumberColumn("Estimated Hours", min_value=0.0),
             "confidence": st.column_config.SelectboxColumn("Confidence", options=CONFIDENCES, required=True),
+            "source": st.column_config.TextColumn(
+                "Provenance",
+                disabled=True,
+                help="How this row was produced. 'fixture' means the app invented it "
+                     "because Claude was never called — not a real extraction.",
+            ),
             "source_quote": st.column_config.TextColumn("Source Quote (Handbook)"),
             "notes": st.column_config.TextColumn("Notes"),
         },
@@ -749,6 +713,16 @@ def render_upload_and_review(conn: sqlite3.Connection) -> None:
                     if len(d_time) == 5:  # HH:MM -> HH:MM:SS
                         d_time += ":00"
 
+                row_source = _resolve_row_source(row_dict.get("source"))
+
+                quote = str(row_dict.get("source_quote") or "").strip()
+                if row_source in db.MACHINE_SOURCES and not quote:
+                    errors.append(
+                        f"Row {idx + 1}: a '{row_source}' row must keep its source quote. "
+                        "Clear the quote only if you are entering the deadline yourself."
+                    )
+                    continue
+
                 to_save.append({
                     "module_code": m_code,
                     "module_name": str(row_dict.get("module_name") or ""),
@@ -761,9 +735,9 @@ def render_upload_and_review(conn: sqlite3.Connection) -> None:
                     "estimated_hours": float(row_dict.get("estimated_hours") or 0.0),
                     "status": "not_started",
                     "progress_pct": 0.0,
-                    "source": "extracted",
+                    "source": row_source,
                     "confidence": str(row_dict.get("confidence") or "high"),
-                    "source_quote": str(row_dict.get("source_quote") or ""),
+                    "source_quote": quote,
                     "notes": str(row_dict.get("notes") or ""),
                 })
 
@@ -772,20 +746,39 @@ def render_upload_and_review(conn: sqlite3.Connection) -> None:
                     st.error(e)
             elif to_save:
                 inserted_ids = db.insert_assessments(conn, to_save)
+                fixture_saved = sum(1 for r in to_save if r["source"] == "fixture")
                 st.session_state.review_queue = []
-                st.success(f"Successfully saved {len(inserted_ids)} assessment(s) to Deadline Radar!")
+                st.session_state.review_fixture_files = []
+                _queue_extraction_notice(
+                    "success",
+                    f"Successfully saved {len(inserted_ids)} assessment(s) to Deadline Radar!",
+                )
+                if fixture_saved:
+                    _queue_extraction_notice(
+                        "warning",
+                        f"⚠️ **{fixture_saved} of those row(s) were saved as fabricated "
+                        "fixture data**, and stay labelled `source = fixture` in the "
+                        "database. The Dashboard flags them so you can delete them once "
+                        "`ANTHROPIC_API_KEY` is configured.",
+                    )
                 st.rerun()
 
     with c_btn2:
         if st.button("🗑️ Discard Review Queue"):
             st.session_state.review_queue = []
-            st.info("Discarded review queue.")
+            st.session_state.review_fixture_files = []
+            _queue_extraction_notice("info", "Discarded review queue.")
             st.rerun()
 
 
 # ---------------------------------------------------------------------------
 # UI View 4: Manual Assessment CRUD
 # ---------------------------------------------------------------------------
+def _assessment_label(a: Mapping[str, Any]) -> str:
+    marker = " 🧪 FIXTURE" if a.get("source") == "fixture" else ""
+    return f"[{a['module_code']}] {a['title']} (ID: {a['id']}){marker}"
+
+
 def render_assessment_management(conn: sqlite3.Connection) -> None:
     st.header("✏️ Manual Assessment Management")
     st.caption("Create, edit, or remove assessments manually.")
@@ -853,7 +846,7 @@ def render_assessment_management(conn: sqlite3.Connection) -> None:
         if not assessments:
             st.info("No assessments to edit.")
         else:
-            options = {f"[{a['module_code']}] {a['title']} (ID: {a['id']})": a["id"] for a in assessments}
+            options = {_assessment_label(a): a["id"] for a in assessments}
             selected_label = st.selectbox("Select Assessment to Edit", options=list(options.keys()))
             selected_id = options[selected_label]
             current = db.get_assessment(conn, selected_id)
@@ -936,7 +929,7 @@ def render_assessment_management(conn: sqlite3.Connection) -> None:
         if not assessments:
             st.info("No assessments to delete.")
         else:
-            del_options = {f"[{a['module_code']}] {a['title']} (ID: {a['id']})": a["id"] for a in assessments}
+            del_options = {_assessment_label(a): a["id"] for a in assessments}
             del_label = st.selectbox("Select Assessment to Delete", options=list(del_options.keys()), key="del_sel")
             del_id = del_options[del_label]
 
@@ -1044,6 +1037,131 @@ def render_progress_tracker(conn: sqlite3.Connection) -> None:
 
 
 # ---------------------------------------------------------------------------
+# UI View 6: Plan My Week
+# ---------------------------------------------------------------------------
+def render_plan_my_week(conn: sqlite3.Connection, today: date) -> None:
+    st.header("🗓️ Plan My Week")
+    st.caption(
+        "Claude reads your deadlines, progress and workload, then proposes where the "
+        "next week's study hours should go. A suggestion only — nothing here is saved."
+    )
+
+    assessments = db.list_assessments(conn)
+    outstanding = [a for a in assessments if a["status"] != "submitted"]
+    if not outstanding:
+        st.info("Nothing outstanding to plan. Add assessments or load demo data first.")
+        return
+
+    rows = [to_analytics_row(a) for a in assessments]
+    term_weeks = get_all_term_weeks()
+    week_loads = analytics.weekly_workload(rows, term_weeks)
+    starts = suggested_start_dates(rows, term_weeks)
+
+    ctrl_col, btn_col = st.columns([3, 1])
+    with ctrl_col:
+        hours_available = st.slider(
+            "Study hours available over the next 7 days",
+            min_value=5.0, max_value=60.0, value=plan.DEFAULT_WEEKLY_HOURS, step=2.5,
+            format="%.1f",
+            help="Your realistic budget. The plan is asked to fit inside it.",
+            key="plan_budget",
+        )
+    with btn_col:
+        st.write("")
+        asked = st.button("🪄 Plan my week", type="primary", key="plan_run")
+
+    # Held in session state so a slider nudge or a rerun does not re-bill the API.
+    if asked:
+        with st.spinner("Asking Claude to prioritise your week..."):
+            try:
+                st.session_state.week_plan = plan.plan_week(
+                    rows, week_loads, today, hours_available=hours_available)
+            except plan.PlanError as exc:
+                st.session_state.week_plan = None
+                st.error(f"Could not build a plan: {exc}")
+
+    result = st.session_state.get("week_plan")
+    if result is None:
+        st.info("Set your budget and press **Plan my week**.")
+        return
+
+    if result.hours_available != hours_available:
+        st.caption(
+            f"Showing a plan built for a {result.hours_available:g}h week. "
+            "Press **Plan my week** again to replan for "
+            f"{hours_available:g}h."
+        )
+
+    # A fabricated plan must never read as Claude's view of this student's work.
+    if result.used_fixtures:
+        st.error(
+            "🧪 **THIS PLAN IS FIXTURE DATA, NOT CLAUDE'S ADVICE.** "
+            f"Reason: {result.reason}. It is a hand-written plan replayed offline, so the "
+            "ranking and the hours below were not reasoned from your actual deadlines. "
+            "Configure `ANTHROPIC_API_KEY` for a real plan."
+        )
+
+    if not result.items:
+        st.warning(
+            "The plan named nothing you are currently tracking."
+            + (f" It referred to: {', '.join(result.unmatched)}." if result.unmatched else "")
+        )
+        return
+
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Hours Planned", f"{result.total_hours:.1f} hrs", f"of {result.hours_available:g}h budget")
+    m2.metric("Assessments", f"{len(result.items)} items")
+    m3.metric(
+        "Over Budget", f"{result.over_budget_hours:.1f} hrs",
+        delta=None if not result.over_budget_hours else -result.over_budget_hours,
+        delta_color="inverse",
+        help="Hours the plan asks for beyond your stated budget. If this is large, "
+             "the workload genuinely does not fit and something has to give.",
+    )
+
+    if result.over_budget_hours:
+        st.warning(
+            f"⚠️ This plan needs {result.total_hours:.1f} hours but you have "
+            f"{result.hours_available:g}. The work does not fit in one week — consider an "
+            "extension request or dropping a lower-weighted component."
+        )
+
+    if result.unmatched:
+        st.info(
+            f"ℹ️ {len(result.unmatched)} suggestion(s) named work you are not tracking and "
+            f"were left out: {', '.join(result.unmatched)}."
+        )
+
+    st.divider()
+
+    for item in result.items:
+        row = next((r for r in rows if r["id"] == item.assessment_id), None)
+        with st.container(border=True):
+            head_col, hours_col = st.columns([4, 1])
+            with head_col:
+                st.markdown(f"### {item.priority}. {item.module_code} — {item.title}")
+                if row is not None:
+                    days_left = (row["due_date"] - today).days
+                    risk = analytics.assess_risk(
+                        row, today=today, start_date=starts[row["id"]]
+                    )
+                    st.caption(
+                        f"Due **{row['due_date'].strftime('%a, %d %b %Y')}** "
+                        f"({days_left} days) | Progress **{row['progress_pct']:.0f}%** | "
+                        f"Remaining **{analytics.remaining_hours(row):.1f}h**"
+                        + ("  ⚠️ **AT RISK**" if risk.at_risk else "")
+                    )
+            with hours_col:
+                st.metric("This week", f"{item.hours:.1f}h")
+            st.markdown(f"**Why:** {item.reason}")
+
+    st.caption(
+        "Nothing on this page has been written to your radar. Log the hours you "
+        "actually spend under **Progress Tracking**."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Main Application Shell & Navigation
 # ---------------------------------------------------------------------------
 def main() -> None:
@@ -1068,6 +1186,7 @@ def main() -> None:
             "📄 Upload & Review",
             "✏️ Manage Assessments",
             "⏱️ Progress Tracking",
+            "🗓️ Plan My Week",
         ],
         index=0,
         key="main_nav_radio",
@@ -1090,22 +1209,45 @@ def main() -> None:
     st.sidebar.subheader("🛠️ Quick Actions")
     assessments = db.list_assessments(conn)
 
-    if assessments:
+    exportable, fabricated = export.split_fabricated(assessments)
+
+    if exportable:
         try:
-            ics_bytes = export.export_calendar(assessments)
+            ics_bytes = export.export_calendar(exportable)
             st.sidebar.download_button(
                 label="📥 Export Calendar (.ics)",
                 data=ics_bytes,
                 file_name="deadline-radar.ics",
                 mime="text/calendar",
-                help="Export all assessments to Google Calendar, Apple Calendar, or Outlook.",
+                help="Export real deadlines to Google Calendar, Apple Calendar, or "
+                     "Outlook. Fabricated fixture rows are never exported.",
             )
         except Exception as exc:
             st.sidebar.caption(f"ICS Export unavailable: {exc}")
+        if fabricated:
+            st.sidebar.warning(
+                f"🧪 The .ics holds {len(exportable)} real deadline(s) and leaves out "
+                f"{len(fabricated)} fabricated fixture row(s). An imported calendar "
+                "event cannot be recalled, so invented dates stay inside the app."
+            )
+    elif fabricated:
+        st.sidebar.warning(
+            f"🧪 Nothing to export: all {len(fabricated)} tracked assessment(s) are "
+            "fabricated fixture data, which never goes into your calendar. Configure "
+            "`ANTHROPIC_API_KEY`, re-extract your handbooks, then export."
+        )
 
     if st.sidebar.button("🌱 Load Demo UCL Data", key="side_seed"):
         count = seed_demo_data(conn)
-        st.sidebar.success(f"Seeded {count} demo assessments!")
+        st.sidebar.success(
+            f"Seeded {count} demo assessments. Re-seeding replaces them rather than "
+            "duplicating, and leaves your own assessments alone."
+        )
+        st.rerun()
+
+    if st.sidebar.button("🧹 Remove Demo Data Only", key="side_clear_demo"):
+        removed = clear_demo_data(conn)
+        st.sidebar.info(f"Removed {removed} demo assessment(s). Your own rows are untouched.")
         st.rerun()
 
     if st.sidebar.button("🗑️ Reset All Data", key="side_reset"):
@@ -1126,6 +1268,8 @@ def main() -> None:
         render_assessment_management(conn)
     elif nav_page == "⏱️ Progress Tracking":
         render_progress_tracker(conn)
+    elif nav_page == "🗓️ Plan My Week":
+        render_plan_my_week(conn, simulated_today)
 
 
 if __name__ == "__main__":

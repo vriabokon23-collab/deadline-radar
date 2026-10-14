@@ -1,2 +1,6 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# ASCII85-encoded PDFs carry no NUL bytes, so auto-detection calls them text and
+# a checkout with core.eol=crlf would rewrite the streams and break the files.
+*.pdf binary

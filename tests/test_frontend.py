@@ -13,6 +13,7 @@ if str(_CURRENT_DIR) not in sys.path:
     sys.path.insert(0, str(_CURRENT_DIR))
 
 import app
+from radar import extract
 
 
 @pytest.fixture
@@ -79,7 +80,7 @@ def test_seed_demo_data(memory_db):
     modules = {r["module_code"] for r in rows}
     assert "COMP0002" in modules
     assert "COMP0004" in modules
-    assert "ENGF0001" in modules
+    assert "COMP0012" in modules
 
     # Check progress log exists
     submitted_item = next(r for r in rows if r["status"] == "submitted")
@@ -135,6 +136,87 @@ def test_calendar_export(memory_db):
     assert b"END:VCALENDAR" in ics_bytes
     assert b"COMP0002" in ics_bytes
     assert b"COMP0004" in ics_bytes
+
+
+def fixture_row(**overrides):
+    """A fabricated row shaped like one _generate_fixture_extractions produces."""
+    row = {
+        "module_code": "COMP9999",
+        "module_name": "Invented Module",
+        "title": "Fabricated Coursework",
+        "type": "coursework",
+        "due_date": "2026-12-07",  # T1 week 11
+        "estimated_hours": 40.0,
+        "source": "fixture",
+        "confidence": "low",
+        "source_quote": "Invented quote; Claude never read a handbook for this.",
+    }
+    row.update(overrides)
+    return row
+
+
+def test_fixture_rows_excluded_from_calendar_export(memory_db):
+    """A fabricated deadline must never reach the student's real calendar."""
+    app.seed_demo_data(memory_db)
+    app.db.insert_assessment(memory_db, fixture_row())
+    rows = app.db.list_assessments(memory_db)
+
+    exportable, fabricated = app.export.split_fabricated(rows)
+    assert len(fabricated) == 1
+    assert len(exportable) == len(rows) - 1
+
+    ics_bytes = app.export.export_calendar(exportable)
+    assert b"COMP0002" in ics_bytes
+    assert b"COMP9999" not in ics_bytes
+    assert b"Fabricated Coursework" not in ics_bytes
+
+    # Same outcome when a caller forgets to filter first.
+    assert b"COMP9999" not in app.export.export_calendar(rows)
+
+
+def test_export_split_without_fixture_rows_keeps_everything(memory_db):
+    app.seed_demo_data(memory_db)
+    rows = app.db.list_assessments(memory_db)
+    exportable, fabricated = app.export.split_fabricated(rows)
+    assert fabricated == []
+    assert len(exportable) == len(rows)
+
+
+def test_heatmap_separates_fabricated_hours(memory_db):
+    """The heatmap keeps fabricated hours in the totals but reports them apart."""
+    app.db.insert_assessment(memory_db, fixture_row(estimated_hours=40.0))
+    app.db.insert_assessment(memory_db, fixture_row(
+        module_code="COMP0002", title="Real Coursework", source="extracted",
+        estimated_hours=10.0, source_quote="Submit by 7 December 2026.",
+    ))
+    rows = [app.to_analytics_row(r) for r in app.db.list_assessments(memory_db)]
+    loads = app.analytics.weekly_workload(rows, app.get_all_term_weeks())
+
+    week11 = next(l for l in loads if l.week.term == "T1" and l.week.week_number == 11)
+    assert week11.remaining_hours == pytest.approx(50.0)
+    assert week11.fabricated_hours == pytest.approx(40.0)
+    assert week11.fabricated_count == 1
+
+    # Without the fabricated hours this week would fall under the 20h crunch line.
+    assert week11.remaining_hours >= 20.0
+    assert week11.remaining_hours - week11.fabricated_hours < 20.0
+    assert sum(l.fabricated_hours for l in loads) == pytest.approx(40.0)
+
+
+def test_extraction_result_reports_fixture_fallback(monkeypatch):
+    """Fixture replay must be reported to the caller, not silently returned."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("DEADLINE_RADAR_FIXTURES", raising=False)
+
+    result = app.extract_from_pdf(b"%PDF-1.4 test", "COMP0004_Algorithms.pdf")
+    assert result.used_fixtures is True
+    assert result.source == "fixture"
+    assert "ANTHROPIC_API_KEY" in result.reason
+
+    monkeypatch.setenv("DEADLINE_RADAR_FIXTURES", "1")
+    forced = app.extract_from_pdf(b"%PDF-1.4 test", "COMP0004_Algorithms.pdf")
+    assert forced.used_fixtures is True
+    assert "DEADLINE_RADAR_FIXTURES" in forced.reason
 
 
 def test_manual_crud_and_progress_logging(memory_db):
@@ -229,11 +311,225 @@ def test_streamlit_app_navigation_and_rendering(tmp_path):
     assert not at.exception
 
 
+def test_fixture_fallback_notice_survives_rerun(tmp_path, monkeypatch):
+    """Uploading with no API key must visibly warn that the rows are fabricated.
+
+    Regression: the notice was rendered in the same pass as st.rerun(), which
+    discards it, so a misconfigured demo showed invented deadlines silently.
+    """
+    from streamlit.testing.v1 import AppTest
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    db_file = tmp_path / "test_radar.db"
+    app.db.connect(db_file).close()
+
+    at = AppTest.from_file(str(_CURRENT_DIR / "app.py"), default_timeout=30)
+    at.session_state["db_path"] = str(db_file)
+    at.run()
+    at.sidebar.radio(key="main_nav_radio").set_value("📄 Upload & Review").run()
+    assert not at.exception
+
+    at.file_uploader[0].set_value(("COMP0004_Algorithms.pdf", b"%PDF-1.4 fake", "application/pdf"))
+    at.run()
+    extract_btn = next(b for b in at.button if "Extract Assessments" in b.label)
+    extract_btn.click().run()
+    assert not at.exception
+
+    # Rows reached the review gate...
+    assert len(at.session_state["review_queue"]) == 2
+    # ...and the fabrication notice is actually on screen alongside them.
+    assert any("fabricated" in w.value for w in at.warning)
+    assert any("Extracted 2 candidate assessments" in s.value for s in at.success)
+    assert any("FIXTURE DATA IN THIS QUEUE" in e.value for e in at.error)
+
+    # One-shot banners drain; the queue badge persists while the rows do.
+    at.run()
+    assert not any("fabricated" in w.value for w in at.warning)
+    assert any("FIXTURE DATA IN THIS QUEUE" in e.value for e in at.error)
+
+
+def test_extraction_result_stamps_row_provenance(monkeypatch):
+    """Every row must carry its own provenance, not just the enclosing result."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("DEADLINE_RADAR_FIXTURES", raising=False)
+
+    fixture = app.extract_from_pdf(b"%PDF-1.4 test", "COMP0004_Algorithms.pdf")
+    assert fixture.used_fixtures is True
+    assert [r["source"] for r in fixture.assessments] == ["fixture"] * len(fixture.assessments)
+
+    # A genuine API result is stamped 'extracted' through the same single path.
+    api = app.ExtractionResult(extract.validate_batch([{
+        "module_code": "COMP0002",
+        "title": "Coursework 1",
+        "type": "coursework",
+        "due_date": "2026-11-16",
+        "confidence": "high",
+        "source_quote": "Due 16 November.",
+    }]), "api")
+    assert api.used_fixtures is False
+    assert [r["source"] for r in api.assessments] == ["extracted"]
+
+
+def test_confirmed_fixture_rows_stay_labelled_in_database(tmp_path, monkeypatch):
+    """Fabricated rows must remain distinguishable after Confirm & Save.
+
+    Regression: the Confirm handler hardcoded source='extracted' for every row,
+    so a demo with no ANTHROPIC_API_KEY wrote invented deadlines into the
+    database labelled exactly like genuine Claude extractions, and the review
+    gate's fixture badge was cleared on save leaving no trace.
+    """
+    from streamlit.testing.v1 import AppTest
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("DEADLINE_RADAR_FIXTURES", raising=False)
+    db_file = tmp_path / "test_radar.db"
+    app.db.connect(db_file).close()
+
+    at = AppTest.from_file(str(_CURRENT_DIR / "app.py"), default_timeout=30)
+    at.session_state["db_path"] = str(db_file)
+    at.run()
+    at.sidebar.radio(key="main_nav_radio").set_value("📄 Upload & Review").run()
+
+    at.file_uploader[0].set_value(("COMP0004_Algorithms.pdf", b"%PDF-1.4 fake", "application/pdf"))
+    at.run()
+    next(b for b in at.button if "Extract Assessments" in b.label).click().run()
+    assert not at.exception
+    assert len(at.session_state["review_queue"]) == 2
+
+    next(b for b in at.button if "Confirm & Save" in b.label).click().run()
+    assert not at.exception
+    assert at.session_state["review_queue"] == []
+
+    # The rows landed, and they are still identifiable as fabricated.
+    conn = app.db.connect(db_file)
+    try:
+        persisted = app.db.list_assessments(conn)
+        assert len(persisted) == 2
+        assert {p["source"] for p in persisted} == {"fixture"}
+        assert all(p["source"] != "extracted" for p in persisted)
+    finally:
+        conn.close()
+
+    # Saving warned that fabricated data was committed...
+    assert any("fixture data" in w.value for w in at.warning)
+    # ...and the dashboard flags them rather than treating them as real.
+    at.sidebar.radio(key="main_nav_radio").set_value("📊 Dashboard").run()
+    assert not at.exception
+    assert any("fabricated fixture data" in e.value for e in at.error)
+
+
+def test_confirmed_api_rows_are_labelled_extracted(tmp_path, monkeypatch):
+    """The fix must not relabel genuine extractions: real rows stay 'extracted'."""
+    from streamlit.testing.v1 import AppTest
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-not-used")
+    db_file = tmp_path / "test_radar.db"
+    app.db.connect(db_file).close()
+
+    genuine = extract.validate_batch([{
+        "module_code": "COMP0002",
+        "module_name": "Software Engineering",
+        "title": "Coursework 1",
+        "type": "coursework",
+        "due_date": "2026-11-16",
+        "due_time": "16:00:00",
+        "weighting_pct": 30,
+        "estimated_hours": 25,
+        "confidence": "high",
+        "source_quote": "Coursework 1 must be submitted by Monday 16 November.",
+    }])
+
+    at = AppTest.from_file(str(_CURRENT_DIR / "app.py"), default_timeout=30)
+    at.session_state["db_path"] = str(db_file)
+    at.run()
+    at.sidebar.radio(key="main_nav_radio").set_value("📄 Upload & Review").run()
+    # Seed the gate the way a successful API extraction would.
+    at.session_state["review_queue"] = app.ExtractionResult(genuine, "api").assessments
+    at.run()
+
+    next(b for b in at.button if "Confirm & Save" in b.label).click().run()
+    assert not at.exception
+
+    conn = app.db.connect(db_file)
+    try:
+        persisted = app.db.list_assessments(conn)
+        assert [p["source"] for p in persisted] == ["extracted"]
+    finally:
+        conn.close()
+
+    at.sidebar.radio(key="main_nav_radio").set_value("📊 Dashboard").run()
+    assert not any("fabricated fixture data" in e.value for e in at.error)
+
+
+def test_saved_fixture_rows_are_flagged_across_views(tmp_path):
+    """A fixture row in the database must be identifiable wherever it appears."""
+    from streamlit.testing.v1 import AppTest
+
+    db_file = tmp_path / "test_radar.db"
+    conn = app.db.connect(db_file)
+    app.db.insert_assessment(conn, {
+        "module_code": "COMP0004", "module_name": "Algorithms",
+        "title": "Problem Set 1", "type": "problem_set", "due_date": "2026-10-30",
+        "estimated_hours": 15.0, "status": "not_started", "progress_pct": 0.0,
+        "source": "fixture", "confidence": "high",
+        "source_quote": "Invented: due Friday 30 October 2026.",
+    })
+    conn.close()
+
+    at = AppTest.from_file(str(_CURRENT_DIR / "app.py"), default_timeout=60)
+    at.session_state["db_path"] = str(db_file)
+    at.run()
+
+    # Every view still renders with the new provenance value present.
+    for view in ["📊 Dashboard", "📈 Workload Heatmap", "📄 Upload & Review",
+                 "✏️ Manage Assessments", "⏱️ Progress Tracking"]:
+        at.sidebar.radio(key="main_nav_radio").set_value(view).run()
+        assert not at.exception, f"{view} raised"
+
+    at.sidebar.radio(key="main_nav_radio").set_value("📊 Dashboard").run()
+    assert any("fabricated fixture data" in e.value for e in at.error)
+    assert any("🧪 FIXTURE" in m.value for m in at.markdown)
+    # The quote a student would check to verify the date is itself invented.
+    assert any("fabricated fixture text" in e.value for e in at.error)
+
+    # Deleting them requires finding them in the management selectors.
+    at.sidebar.radio(key="main_nav_radio").set_value("✏️ Manage Assessments").run()
+    assert any("FIXTURE" in opt for sb in at.selectbox for opt in (sb.options or []))
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("fixture", "fixture"),
+    ("extracted", "extracted"),
+    ("manual", "manual"),
+    ("  fixture  ", "fixture"),
+    # Rows appended in the data editor carry no provenance at all.
+    (None, "manual"),
+    (float("nan"), "manual"),
+    ("", "manual"),
+    # An unrecognised label must never be promoted to a trustworthy one.
+    ("api", "manual"),
+    ("EXTRACTED", "manual"),
+])
+def test_resolve_row_source(raw, expected):
+    """Confirm-time provenance resolution: trust the row, never invent trust."""
+    assert app._resolve_row_source(raw) == expected
+
+
+def test_rows_typed_into_review_editor_are_manual(memory_db):
+    """A row added in the editor has no provenance and saves as the student's own."""
+    resolved = app._resolve_row_source(float("nan"))
+    # 'manual' is the one source that may be saved without a quote.
+    saved = app.db.insert_assessment(memory_db, {
+        "module_code": "COMP0099", "title": "Self-entered", "type": "essay",
+        "due_date": "2026-11-20", "estimated_hours": 5.0, "source": resolved,
+        "confidence": "high", "source_quote": "",
+    })
+    assert app.db.get_assessment(memory_db, saved)["source"] == "manual"
+
+
 def test_review_confirmation_pipeline(memory_db):
     """Test extracting handbooks into review queue and confirming to DB."""
-    candidates = app.extract.extract_from_pdf(
-        b"%PDF-1.4 sample", "COMP0002_Software_Engineering.pdf", fixtures_mode=True,
-    ).assessments
+    candidates = app.extract_from_pdf(b"%PDF-1.4 sample", "COMP0002_Software_Engineering.pdf").assessments
     assert len(candidates) >= 2
 
     # Verify review gate holds: nothing in database yet
