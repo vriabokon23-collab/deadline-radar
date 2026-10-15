@@ -67,7 +67,7 @@ class FakeClient:
         reply = self.replies.pop(0)
         if isinstance(reply, Exception):
             raise reply
-        return SimpleNamespace(content=[SimpleNamespace(text=reply)])
+        return SimpleNamespace(content=[SimpleNamespace(type='text', text=reply)])
 
 
 class ForbiddenClient:

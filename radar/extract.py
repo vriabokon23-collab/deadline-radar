@@ -25,6 +25,7 @@ from typing import Any, Iterable, Mapping
 
 from radar import calendar
 from radar.db import ASSESSMENT_TYPES, CONFIDENCES
+from radar.response import response_text
 
 MODEL = 'claude-sonnet-5-5'
 MAX_ATTEMPTS = 2  # the first call plus the single retry CLAUDE.md allows
@@ -275,7 +276,7 @@ def _call_model(client: Any, file_bytes: bytes) -> str:
             ],
         }],
     )
-    return response.content[0].text
+    return response_text(response)
 
 
 def fixture_path(filename: str) -> Path:

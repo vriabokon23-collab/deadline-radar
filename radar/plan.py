@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from radar import analytics
+from radar.response import response_text
 
 # The model is pinned once, in radar.extract. Importing it rather than
 # re-declaring it means a stretch feature can never drift onto a different
@@ -325,7 +326,7 @@ def _call_model(client: Any, prompt: str) -> str:
         max_tokens=MAX_TOKENS,
         messages=[{'role': 'user', 'content': [{'type': 'text', 'text': prompt}]}],
     )
-    return response.content[0].text
+    return response_text(response)
 
 
 def plan_week(

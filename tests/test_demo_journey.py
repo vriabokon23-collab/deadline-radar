@@ -42,7 +42,7 @@ def test_complete_demo_journey(tmp_path, monkeypatch, offline):
                                           'anth0045_digital_anthropology.json').read_text())['assessments']
                 else:
                     payload = json.loads(plan.PLAN_FIXTURE.read_text())['plan']
-                return SimpleNamespace(content=[SimpleNamespace(text=json.dumps(payload))])
+                return SimpleNamespace(content=[SimpleNamespace(type='text', text=json.dumps(payload))])
         monkeypatch.setattr(anthropic, 'Anthropic', FakeClient)
     path = tmp_path / 'demo.db'
     at = AppTest.from_file(str(ROOT / 'app.py'), default_timeout=20)

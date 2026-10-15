@@ -77,7 +77,7 @@ class FakeClient:
         reply = self.replies.pop(0)
         if isinstance(reply, Exception):
             raise reply
-        return SimpleNamespace(content=[SimpleNamespace(text=reply)])
+        return SimpleNamespace(content=[SimpleNamespace(type='text', text=reply)])
 
 
 class ForbiddenClient:
@@ -494,7 +494,7 @@ def test_sdk_retries_are_disabled_and_timeout_is_bounded(monkeypatch):
             captured.update(kwargs)
             self.messages = self
         def create(self, **kwargs):
-            return SimpleNamespace(content=[SimpleNamespace(text=json.dumps([VALID_ROW]))])
+            return SimpleNamespace(content=[SimpleNamespace(type='text', text=json.dumps([VALID_ROW]))])
     monkeypatch.setattr(anthropic, 'Anthropic', Client)
     result = extract.extract_from_pdf(b'%PDF-1.4', 'test.pdf',
                                       api_key='test-only', fixtures_mode=False)
